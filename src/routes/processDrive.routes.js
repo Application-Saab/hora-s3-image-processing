@@ -1,9 +1,9 @@
 const express = require("express");
 const router = express.Router();
-const { handleDriveFolderUpload , uploadSingleImage} = require("../services/drive.service");
+const { handleDriveFolderUpload, uploadSingleImage } = require("../services/drive.service");
 const Folder = require("../models/folder");
 const fs = require("fs");
-const { uploadFileToS3, generateThumbnail ,upload} = require("../utils/auth.util");
+const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview } = require("../utils/auth.util");
 const multer = require("multer");
 const path = require("path");
 const WebLink = require("../models/weblink-images")
@@ -68,8 +68,7 @@ router.delete("/delete-image/:id", async (req, res) => {
 });
 
 router.post("/process-drive", async (req, res) => {
-  const { folderUrl, order_id, phoneNo, customerId, mainFolderId} = req.body;
-console.log('main folder id in the process drive',mainFolderId);
+  const { folderUrl, order_id, phoneNo, customerId, mainFolderId } = req.body;
   if (!folderUrl || !order_id) {
     return res.status(400).json({ message: "folderUrl & order_id required" });
   }
@@ -79,7 +78,7 @@ console.log('main folder id in the process drive',mainFolderId);
   setImmediate(async () => {
     try {
       const vendorId = order_id + 10800;
-      await handleDriveFolderUpload(folderUrl, vendorId,phoneNo,customerId,order_id, mainFolderId);
+      await handleDriveFolderUpload(folderUrl, vendorId, phoneNo, customerId, order_id, mainFolderId);
       console.log("Drive processing completed:", vendorId);
     } catch (err) {
       console.error("Drive processing failed:", err.message);
@@ -87,148 +86,82 @@ console.log('main folder id in the process drive',mainFolderId);
   });
 });
 
-router.post(
-  "/create-subfolder",
-  uploadSingel.single("file"),
-  async (req, res) => {
-    try {
-      const {
+router.post("/create-subfolder", uploadSingel.single("file"), async (req, res) => {
+  try {
+    const {
+      folderName,
+      type,
+      userId,
+      subFolderName,
+      customerId,
+      vendorId,
+      phoneNo,
+    } = req.body;
+
+    if (!folderName || !type || !userId) {
+      return res.status(400).json({
+        message: "folderName, type and userId are required",
+      });
+    }
+
+    const folder = await Folder.findOne({ folderName });
+
+    if (!folder) {
+      return res.status(404).json({
+        message: "Main folder does not exist",
+      });
+    }
+
+    if (type === "my_photos") {
+      const alreadyExists = folder.subFolders.some(
+        (sf) => sf.userId === userId && sf.type === "my_photos"
+      );
+
+      if (alreadyExists) {
+        return res.status(409).json({
+          message: "My Photos subfolder already exists",
+        });
+      }
+    }
+
+    let folderDp = "";
+
+    // REUSE upload-single logic
+    if (req.file) {
+      folderDp = await uploadSingleImage({
+        file: req.file,
         folderName,
-        type,
-        userId,
-        subFolderName,
         customerId,
         vendorId,
         phoneNo,
-      } = req.body;
-
-      if (!folderName || !type || !userId) {
-        return res.status(400).json({
-          message: "folderName, type and userId are required",
-        });
-      }
-
-      const folder = await Folder.findOne({ folderName });
-
-      if (!folder) {
-        return res.status(404).json({
-          message: "Main folder does not exist",
-        });
-      }
-
-      if (type === "my_photos") {
-        const alreadyExists = folder.subFolders.some(
-          (sf) => sf.userId === userId && sf.type === "my_photos"
-        );
-
-        if (alreadyExists) {
-          return res.status(409).json({
-            message: "My Photos subfolder already exists",
-          });
-        }
-      }
-
-      let folderDp = "";
-
-      // 🔥 REUSE upload-single logic
-      if (req.file) {
-        folderDp = await uploadSingleImage({
-          file: req.file,
-          folderName,
-          customerId,
-          vendorId,
-          phoneNo,
-        });
-      }
-
-      const newSubFolder = {
-        folderName: type === "my_photos" ? "My Photos" : subFolderName,
-        type,
-        userId: type === "my_photos" ? userId : folder.customerId,
-        folderDp,
-      };
-
-      folder.subFolders.push(newSubFolder);
-      await folder.save();
-      const savedSubFolder = folder.subFolders[folder.subFolders.length - 1];
-
-
-      res.status(201).json({
-        message: "Subfolder created successfully",
-        subFolder: savedSubFolder,
-      });
-    } catch (error) {
-      console.error("Create subfolder error:", error);
-      res.status(500).json({
-        message: "Server error",
-        error: error.message,
       });
     }
-  }
-);
 
+    const newSubFolder = {
+      folderName: type === "my_photos" ? "My Photos" : subFolderName,
+      type,
+      userId: type === "my_photos" ? userId : folder.customerId,
+      folderDp,
+    };
 
+    folder.subFolders.push(newSubFolder);
+    await folder.save();
+    const savedSubFolder = folder.subFolders[folder.subFolders.length - 1];
 
-router.post("/upload-single", uploadSingel.single("file"), async (req, res) => {
-  try {
-    const { folderName, customerId, vendorId, phoneNo } = req.body;
-
-    if (!folderName || !customerId) {
-      return res
-        .status(400)
-        .json({ message: "Folder Name and Customer ID are required." });
-    }
-
-    if (!req.file) {
-      return res.status(400).json({ message: "No file was uploaded." });
-    }
-
-    // Construct folder path for S3
-    const folderPath = vendorId
-      ? `${folderName}_${customerId}_${vendorId}`
-      : `${folderName}_${customerId}`;
-
-    const file = req.file;
-    const filePath = file.path;
-    const fileName = file.filename;
-
-    console.log(
-      `Processing file: ${file.originalname} at ${new Date().toLocaleTimeString()}`
-    );
-
-    // Generate thumbnail path
-    const thumbnailPath = `${filePath.replace(/\.(png|jpeg|jpg)$/i, "")}_thumbnail.webp`;
-
-    // Generate thumbnail
-    await generateThumbnail(filePath, thumbnailPath);
-
-    // Upload original file to S3
-    const s3Response = await uploadFileToS3(filePath, fileName, folderPath, phoneNo);
-
-    // Upload thumbnail to S3
-    const thumbFileName = `thumb_${fileName.replace(/\.(png|jpeg|jpg)$/i, "")}.webp`;
-    const s3ThumbResponse = await uploadFileToS3(thumbnailPath, thumbFileName, folderPath, phoneNo);
-
-    // Delete local temp files
-    fs.unlinkSync(filePath);
-    fs.unlinkSync(thumbnailPath);
 
     res.status(201).json({
-      message: "File uploaded successfully.",
-      file: {
-        fileName: file.originalname,
-        fileUrl: s3Response.Location,
-        s3Key: s3Response.Key,
-        thumbnailUrl: s3ThumbResponse.Location,
-        thumbnailKey: s3ThumbResponse.Key,
-      },
+      message: "Subfolder created successfully",
+      subFolder: savedSubFolder,
     });
   } catch (error) {
-    console.error("Upload error:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    console.error("Create subfolder error:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
   }
-});
-
+}
+);
 
 router.post("/upload-multiple", upload.array("images", 10), async (req, res) => {
   try {
@@ -239,7 +172,13 @@ router.post("/upload-multiple", upload.array("images", 10), async (req, res) => 
       return res.status(400).json({ message: "No images uploaded" });
     }
 
-     const folder = await Folder.findOne({ folderName }).lean();
+    const folder = await Folder.findOne({ folderName }).lean();
+
+    if (!folder) {
+      return res.status(404).json({
+        message: "Folder not found",
+      });
+    }
 
     let finalOrderId = orderId;
     if (!finalOrderId && folderName) {
@@ -257,65 +196,126 @@ router.post("/upload-multiple", upload.array("images", 10), async (req, res) => 
     const results = [];
 
     for (const file of files) {
+      const isImage = file.mimetype.startsWith("image/");
+      const isVideo = file.mimetype.startsWith("video/");
+
+      const originalPath = file.path;
       let thumbPath;
+      let clipPath;
+
       try {
-        const originalPath = file.path;
-        const thumbName = `thumb_${file.filename}.webp`;
-        thumbPath = path.join(TEMP_DIR, thumbName);
+        // ================= IMAGE =================
+        if (isImage) {
+          const thumbName = `thumb_${file.filename}.webp`;
+          thumbPath = path.join(TEMP_DIR, thumbName);
 
-        await generateThumbnail(originalPath, thumbPath);
+          await generateThumbnail(originalPath, thumbPath);
 
-        const originalRes = await uploadFileToS3(
-          originalPath,
-          file.filename,
-          folderPath,
-          phoneNo,
-          file.mimetype
-        );
+          const originalRes = await uploadFileToS3(
+            originalPath,
+            file.filename,
+            folderPath,
+            phoneNo,
+            file.mimetype
+          );
 
-        const thumbRes = await uploadFileToS3(
-          thumbPath,
-          thumbName,
-          folderPath,
-          phoneNo,
-          "image/webp"
-        );
-        console.log(phoneNo);
+          const thumbRes = await uploadFileToS3(
+            thumbPath,
+            thumbName,
+            folderPath,
+            phoneNo,
+            "image/webp"
+          );
 
-        const saved = await WebLink.create({
-          orderId: finalOrderId.toString(),
-          orderById: customerId,
-          mainFolderId:folder._id,
-          orderByName: phoneNo || "",
-          type: "image",
-          originalUrl: originalRes.Location,
-          originalKey: originalRes.Key,
-          thumbnailImageUrl: thumbRes.Location,
-          thumbnailKey: thumbRes.Key,
-        });
+          const saved = await WebLink.create({
+            orderId: finalOrderId.toString(),
+            orderById: customerId,
+            mainFolderId: folder._id,
+            orderByName: phoneNo || "",
+            type: "image",
+            originalUrl: originalRes.Location,
+            originalKey: originalRes.Key,
+            thumbnailImageUrl: thumbRes.Location,
+            thumbnailKey: thumbRes.Key,
+          });
 
-        results.push({
-          fileName: file.originalname,
-          imageId: saved._id,
-          imageUrl: originalRes.Location,
-          thumbnailUrl: thumbRes.Location,
-          orderById:saved.orderById,
-          orderByName:saved.orderByName,
-          mainFolderId:saved.mainFolderId,
-        });
+          results.push({
+            fileName: file.originalname,
+            imageId: saved._id,
+            imageUrl: originalRes.Location,
+            thumbnailUrl: thumbRes.Location,
+          });
+        }
 
-        // cleanup
-        [originalPath, thumbPath].forEach((p) => {
-          if (p && fs.existsSync(p)) fs.unlinkSync(p);
-        });
+        // ================= VIDEO =================
+        else if (isVideo) {
+          const clipName = `clip_${file.filename}.mp4`;
+          clipPath = path.join(TEMP_DIR, clipName);
+
+          await generateVideoPreview(originalPath, clipPath, 3);
+
+          const videoRes = await uploadFileToS3(
+            originalPath,
+            file.filename,
+            folderPath,
+            phoneNo,
+            file.mimetype
+          );
+
+          const clipRes = await uploadFileToS3(
+            clipPath,
+            clipName,
+            folderPath,
+            phoneNo,
+            "video/mp4"
+          );
+
+          const saved = await WebLink.create({
+            orderId: finalOrderId.toString(),
+            orderById: customerId,
+            mainFolderId: folder._id,
+            orderByName: phoneNo || "",
+            type: "video",
+            originalUrl: videoRes.Location,
+            originalKey: videoRes.Key,
+            thumbnailImageUrl: null,
+            thumbnailKey: null,
+            videoClipUrl: clipRes.Location,
+            videoClipKey: clipRes.Key,
+          });
+
+          results.push({
+            fileName: file.originalname,
+            imageId: saved._id,
+            videoUrl: videoRes.Location,
+            clipUrl: clipRes.Location,
+          });
+        }
       } catch (err) {
-        console.error(`Image failed: ${file.originalname}`, err.message);
+        console.error(`Processing failed: ${file.originalname}`, err.message);
         results.push({
           fileName: file.originalname,
           error: err.message,
         });
+      } finally {
+        // 🔥 GUARANTEED CLEANUP
+        const paths = [originalPath, thumbPath, clipPath];
+
+        await Promise.all(
+          paths.map(async (p) => {
+            if (p && fs.existsSync(p)) {
+              try {
+                await fsPromises.unlink(p);
+                console.log("Deleted:", p);
+              } catch (err) {
+                console.error("Delete failed:", p, err.message);
+              }
+            }
+          })
+        );
       }
     }
+
 
     return res.status(200).json({
       success: true,
