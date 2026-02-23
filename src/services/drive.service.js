@@ -69,7 +69,6 @@ async function handleDriveFolderUpload(
   orderId,
   mainFolderId
 ) {
-  console.log('mainFolderId in teh function', mainFolderId);
   const folderId = getFolderIdFromUrl(folderUrl);
   if (!folderId) throw new Error("Invalid Google Drive folder URL");
   if (!apiKey) throw new Error("Google Drive API key not configured");

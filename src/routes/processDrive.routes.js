@@ -163,7 +163,7 @@ router.post("/create-subfolder", uploadSingel.single("file"), async (req, res) =
 }
 );
 
-router.post("/upload-multiple", upload.array("images", 10), async (req, res) => {
+router.post("/upload-multiple", upload.array("images"), async (req, res) => {
   try {
     const { orderId, customerId, phoneNo, name, folderName } = req.body;
     const files = req.files;
@@ -328,6 +328,181 @@ router.post("/upload-multiple", upload.array("images", 10), async (req, res) => 
   }
 });
 
+//admin panel create folder
+router.post("/upload", upload.array("files"), async (req, res) => {
+  try {
+    const { folderName, customerId, vendorId, phoneNo } = req.body;
+
+    if (!folderName || !customerId) {
+      return res
+        .status(400)
+        .json({ message: "Folder Name and Customer ID are required." });
+    }
+
+    const folder = await Folder.findOne({ folderName }).lean();
+
+    if (!folder) {
+      return res.status(404).json({
+        message: "Folder not found",
+      });
+    }
+
+    const mainFolderId = folder._id;
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ message: "No files were uploaded." });
+    }
+
+    const folderPath = vendorId
+      ? `${folderName}_${customerId}_${vendorId}`
+      : `${folderName}_${customerId}`;
+
+    const uploadedFiles = [];
+
+    for (const file of req.files) {
+      const filePath = file.path;
+      const fileName = file.filename;
+
+      const isImage = file.mimetype.startsWith("image/");
+      const isVideo = file.mimetype.startsWith("video/");
+
+      let thumbPath;
+      let clipPath;
+
+      try {
+        // ================= IMAGE =================
+        if (isImage) {
+          const thumbName = `thumb_${fileName}.webp`;
+          thumbPath = path.join(TEMP_DIR, thumbName);
+
+          await generateThumbnail(filePath, thumbPath);
+
+          const originalRes = await uploadFileToS3(
+            filePath,
+            fileName,
+            folderPath,
+            phoneNo,
+            file.mimetype
+          );
+
+          const thumbRes = await uploadFileToS3(
+            thumbPath,
+            thumbName,
+            folderPath,
+            phoneNo,
+            "image/webp"
+          );
+
+          await WebLink.create({
+            orderId: vendorId ? vendorId.toString() : folderName,
+            orderById: customerId,
+            orderByName: phoneNo || "",
+            type: "image",
+            originalUrl: originalRes.Location,
+            originalKey: originalRes.Key,
+            thumbnailImageUrl: thumbRes.Location,
+            thumbnailKey: thumbRes.Key,
+            videoClipUrl: null,
+            videoClipKey: null,
+            mainFolderId,
+          });
+
+          uploadedFiles.push({
+            fileName: file.originalname,
+            imageUrl: originalRes.Location,
+            thumbnailUrl: thumbRes.Location,
+          });
+        }
+
+        // ================= VIDEO =================
+        else if (isVideo) {
+          const clipName = `clip_${fileName}.mp4`;
+          clipPath = path.join(TEMP_DIR, clipName);
+
+          await generateVideoPreview(filePath, clipPath, 3);
+
+          const videoRes = await uploadFileToS3(
+            filePath,
+            fileName,
+            folderPath,
+            phoneNo,
+            file.mimetype
+          );
+
+          const clipRes = await uploadFileToS3(
+            clipPath,
+            clipName,
+            folderPath,
+            phoneNo,
+            "video/mp4"
+          );
+
+          await WebLink.create({
+            orderId: vendorId ? vendorId.toString() : folderName,
+            orderById: customerId,
+            orderByName: phoneNo || "",
+            type: "video",
+            originalUrl: videoRes.Location,
+            originalKey: videoRes.Key,
+            thumbnailImageUrl: null,
+            thumbnailKey: null,
+            videoClipUrl: clipRes.Location,
+            videoClipKey: clipRes.Key,
+            mainFolderId,
+          });
+
+          uploadedFiles.push({
+            fileName: file.originalname,
+            videoUrl: videoRes.Location,
+            clipUrl: clipRes.Location,
+          });
+        }
+
+        else {
+          uploadedFiles.push({
+            fileName: file.originalname,
+            error: "Unsupported file type",
+          });
+        }
+
+      } catch (error) {
+        console.error(`Error processing ${fileName}:`, error.message);
+        uploadedFiles.push({
+          fileName: file.originalname,
+          error: error.message,
+        });
+      } finally {
+        // ✅ Guaranteed cleanup
+        const paths = [filePath, thumbPath, clipPath];
+
+        for (const p of paths) {
+          if (!p) continue;
+
+          try {
+            await fsPromises.unlink(p);
+            console.log("Deleted:", p);
+          } catch (err) {
+            if (err.code !== "ENOENT") {
+              console.error("Delete failed:", p, err.message);
+            }
+          }
+        }
+      }
+    }
+
+    return res.status(201).json({
+      message: "Files uploaded successfully.",
+      files: uploadedFiles,
+    });
+
+  } catch (error) {
+    console.error("Upload error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
 
 module.exports = router;
 
