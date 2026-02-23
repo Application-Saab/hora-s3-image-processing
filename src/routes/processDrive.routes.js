@@ -191,7 +191,7 @@ router.post("/upload-multiple", upload.array("images"), async (req, res) => {
         .json({ message: "orderId and customerId are required" });
     }
 
-    const folderPath = `orders/${finalOrderId}_${customerId}`;
+    const folderPath = folderName; 
 
     const results = [];
 
