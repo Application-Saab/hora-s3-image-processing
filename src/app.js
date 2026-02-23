@@ -12,6 +12,9 @@ app.use(express.urlencoded({ extended: true })); // for form data
 
 
 // Routes
+app.use("/test", (req, res) => {
+  res.json({ message: "Test route working !!!" });
+});
 app.use("/", processDriveRoutes);
 
 module.exports = app;
