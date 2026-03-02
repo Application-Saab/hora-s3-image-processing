@@ -44,7 +44,19 @@ if (fs.existsSync(filePath)) {
     },
   };
 
-  return s3.upload(params).promise();
+  // return s3.upload(params).promise();
+  try {
+  const result = await s3.upload(params).promise();
+  console.log("UPLOAD SUCCESS:", fileName);
+  return result;
+} catch (err) {
+  console.log("❌ S3 UPLOAD ERROR for:", fileName);
+  console.log("Status Code:", err.statusCode);
+  console.log("Error Code:", err.code);
+  console.log("Error Message:", err.message);
+  console.log("Full Error:", JSON.stringify(err, null, 2));
+  throw err;
+}
 };
 
 // =======================

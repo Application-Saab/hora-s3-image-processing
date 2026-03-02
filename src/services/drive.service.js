@@ -8,9 +8,6 @@ const {
   uploadFileToS3,
   generateVideoPreview,
 } = require("../utils/auth.util.js");
-const fsPromises = require("fs").promises;
-
-
 const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
 const TEMP_DIR = path.join(process.cwd(), "tempUploads");
 
@@ -69,7 +66,15 @@ async function handleDriveFolderUpload(
   orderId,
   mainFolderId
 ) {
-  console.log("mainFolderId in the handler",mainFolderId)
+
+  //retry file arrray
+  let failedFiles = [];
+
+  let totalFromDrive = 0;
+  let successCount = 0;
+  let failCount = 0;
+
+  console.log("mainFolderId in the handler", mainFolderId)
   const folderId = getFolderIdFromUrl(folderUrl);
   if (!folderId) throw new Error("Invalid Google Drive folder URL");
   if (!apiKey) throw new Error("Google Drive API key not configured");
@@ -85,24 +90,10 @@ async function handleDriveFolderUpload(
   const tempDir = path.join(__dirname, "tempUploads");
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
-  // 📂 list image + video
-  let files = [];
-  let pageToken = null;
-  do {
-    let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)`;
-    if (pageToken) listUrl += `&pageToken=${pageToken}`;
-    const listRes = await axios.get(listUrl);
-    files = files.concat(listRes.data.files);
-    pageToken = listRes.data.nextPageToken;
-  } while (pageToken);
-
-  if (!files.length) throw new Error("No files found");
 
   const folderPath = folderName;
-
-  const uploadPromises = files.map(async (file) => {
+  async function processFile(file, retryCount = 0) {
     let filePath, thumbnailPath, clipPath;
-
     try {
       const originalName = file.name;
       const fileName = `${Date.now()}_${originalName}`;
@@ -170,10 +161,11 @@ async function handleDriveFolderUpload(
           catch (error) {
             console.log('create documnet error ------- image -------', error);
           }
-
+          successCount++;
           return { type: "image", fileName: originalName };
         }
         catch (error) {
+          failCount++;
           console.log('image upload error', error); return { type: "image", fileName: originalName, error: error.message };
         }
       }
@@ -224,17 +216,38 @@ async function handleDriveFolderUpload(
           catch (error) {
             console.log('create documnet error ------- video -------', error);
           }
-
+          successCount++;
           return { type: "video", fileName: originalName };
         }
         catch (error) {
+          failCount++;
           console.log('video upload error', error); return { type: "video", fileName: originalName, error: error.message };
         }
       }
-    } catch (err) {
-      console.error(`Error processing ${file?.name}:`, err.message);
-      return { fileName: file?.name, error: err.message };
-    } finally {
+    } 
+    // catch (err) {
+    //   console.error(`Error processing ------------ ${file?.name}:`, err.message);
+    //   failCount++;
+    //   return { fileName: file?.name, error: err.message };
+    // } 
+    catch (err) {
+  console.error(`Error processing ------------------- ${file?.name}:`, err.message);
+  console.log(`Retry Count: ${retryCount}`);
+
+  if (retryCount < 2) {
+    console.log(`--------------- Retrying ${file?.name} | Attempt ${retryCount + 2}`);
+    return processFile(file, retryCount + 1);
+  } else {
+    console.log(`Max retries reached for ${file?.name}`);
+    failedFiles.push({
+      fileName: file?.name,
+      error: err.message
+    });
+    failCount++;
+    return { fileName: file?.name, error: err.message };
+  }
+}
+    finally {
       [filePath, thumbnailPath, clipPath].forEach((p) => {
         if (p && fs.existsSync(p)) {
           try {
@@ -246,203 +259,85 @@ async function handleDriveFolderUpload(
         }
       });
     }
-  });
+  }
 
-  const uploadedFiles = await Promise.all(uploadPromises);
-  console.log("uploadedFiles -----------",uploadedFiles);
-  console.log("Upload completed for orderId:", orderId);
-  return uploadedFiles;
-}
-
-
-
-console.log("hello")
-//batch processing 
-
-async function handleDriveFolderUploadBatch(
-  folderUrl,
-  vendorId,
-  phoneNo,
-  customerId,
-  orderId,
-  mainFolderId
-) {
-  const folderId = getFolderIdFromUrl(folderUrl);
-  if (!folderId) throw new Error("Invalid Google Drive folder URL");
-  if (!apiKey) throw new Error("Google Drive API key not configured");
-
-  const isPublic = await isFolderPubliclyAccessible(folderId, apiKey);
-  if (!isPublic) throw new Error("Google Drive folder link is not publicly accessible");
-
-  const folderName = `${orderId}_${customerId}_${phoneNo}`;
-  const orderByName = phoneNo || ""; // store this properly
-
-  if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
-
-  const MAX_BATCH = 10;
-  const pageSize = MAX_BATCH;
+  const MAX_CONCURRENT = 10;
+  let activeCount = 0;
   let pageToken = null;
-  const uploadQueue = [];
-  let activeUploads = 0;
-  let completedCount = 0;
-  let failedCount = 0;
+  let finished = false;
 
-  // ---------------- FETCH BATCH FROM DRIVE ----------------
-  async function fetchNextBatch() {
-    let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=${pageSize}`;
+  async function getNextBatch() {
+    if (finished) return [];
+
+    let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=10`;
+
     if (pageToken) listUrl += `&pageToken=${pageToken}`;
 
-    const listRes = await axios.get(listUrl);
-    pageToken = listRes.data.nextPageToken;
+    const res = await axios.get(listUrl);
+    const files = res.data.files || [];
+    totalFromDrive += files.length;
 
-    if (listRes.data.files && listRes.data.files.length) {
-      uploadQueue.push(...listRes.data.files);
-      console.log(`Fetched ${listRes.data.files.length} files from Drive. Queue length: ${uploadQueue.length}`);
-    }
+    console.log("📦 Drive batch fetched:", res.data.files?.length);
+    console.log("EXT PAGE TOKEN :", res.data.nextPageToken);
 
-    return !!pageToken;
+    pageToken = res.data.nextPageToken;
+    if (!pageToken) finished = true;
+
+    return files;
   }
 
-  // ---------------- PROCESS NEXT ----------------
-  async function processNext() {
+  async function startProcessing() {
+    let queue = await getNextBatch();
+    const results = [];
 
-    if (activeUploads >= MAX_BATCH) return;
+    while (queue.length > 0 || !finished || activeCount > 0) {
 
-    if (!uploadQueue.length && pageToken) {
-      const moreFiles = await fetchNextBatch();
-      if (!moreFiles && !uploadQueue.length && activeUploads === 0) {
-        console.log(
-          `\nAll processing done. Completed: ${completedCount}, Failed: ${failedCount}`
-        );
-        return;
+      while (queue.length > 0 && activeCount < MAX_CONCURRENT) {
+        const file = queue.shift();
+        console.log(" PROCESSING START START:", file.name, "| Active:", activeCount);
+        activeCount++;
+
+        processFile(file)
+          .then(result => results.push(result))
+          .catch(err => results.push({ error: err.message }))
+          .finally(() => {
+
+            activeCount--;
+            console.log("DONE PROCESSING:", file.name, "| Active:", activeCount);
+
+          });
       }
-    }
 
-    if (!uploadQueue.length) return; // wait if fetching batch
-
-    const file = uploadQueue.shift();
-    activeUploads++;
-    console.log(`\nSTART processing: ${file.name} | Active uploads: ${activeUploads}`);
-
-    try {
-      const result = await processSingleFile(file, folderName, phoneNo, customerId, orderId, mainFolderId, orderByName);
-      completedCount++;
-      console.log(`✔ COMPLETED: ${file.name} | Type: ${result.type}`);
-    } catch (err) {
-      failedCount++;
-      console.log(`❌ FAILED: ${file.name} | Error: ${err.message}`);
-    } finally {
-      activeUploads--;
-      processNext();
-    }
-
-    processNext();
-  }
-
-  // ---------------- PROCESS SINGLE FILE ----------------
-  async function processSingleFile(file, folderPath, phoneNo, customerId, orderId, mainFolderId, orderByName, maxRetries = 3) {
-    let attempt = 0;
-
-    while (attempt < maxRetries) {
-      attempt++;
-      console.log(`Processing ${file.name} | Attempt ${attempt}`);
-
-      let filePath, thumbnailPath, clipPath;
-
-      try {
-        const originalName = file.name;
-        const fileName = `${Date.now()}_${originalName}`;
-        filePath = path.join(TEMP_DIR, fileName);
-
-        // download from Drive
-        const downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${apiKey}`;
-        await downloadFile(downloadUrl, filePath);
-        console.log(`Download complete: ${file.name}`);
-
-        const isImage = file.mimeType.startsWith("image/");
-        const isVideo = file.mimeType.startsWith("video/") || file.name.match(/\.(mp4|mov|mkv|webm)$/i);
-
-        // ---------------- IMAGE ----------------
-        if (isImage) {
-          thumbnailPath = path.join(TEMP_DIR, `thumb_${fileName.replace(/\.(png|jpeg|jpg)$/i, "")}.webp`);
-
-          try {
-            const uploadOriginal = uploadFileToS3(filePath, fileName, folderPath, phoneNo);
-            await generateThumbnail(filePath, thumbnailPath);
-            const uploadThumb = uploadFileToS3(path.resolve(thumbnailPath), path.basename(thumbnailPath), folderPath, phoneNo);
-
-            const [original, thumb] = await Promise.all([uploadOriginal, uploadThumb]);
-
-            await WebLink.create({
-              orderId: orderId.toString(),
-              orderById: customerId,
-              orderByName, // <-- store properly
-              type: "image",
-              originalUrl: original.Location,
-              originalKey: original.Key,
-              thumbnailImageUrl: thumb.Location,
-              thumbnailKey: thumb.Key,
-              videoClipUrl: null,
-              videoClipKey: null,
-              mainFolderId,
-            });
-
-            return { type: "image", fileName: originalName };
-          } catch (err) {
-            console.error(`Image Upload/Mongo Error: ${file.name} | Attempt ${attempt} | ${err.message}`);
-            if (attempt >= maxRetries) throw err;
-            else continue; // retry
-          }
-        }
-
-        // ---------------- VIDEO ----------------
-        if (isVideo) {
-          clipPath = path.join(TEMP_DIR, `clip_${fileName}.mp4`);
-          await generateVideoPreview(filePath, clipPath, 3);
-
-          try {
-            const uploadVideo = uploadFileToS3(filePath, fileName, folderPath, phoneNo, file.mimeType);
-            const uploadClip = uploadFileToS3(clipPath, path.basename(clipPath), folderPath, phoneNo, "video/mp4");
-
-            const [video, clip] = await Promise.all([uploadVideo, uploadClip]);
-
-            await WebLink.create({
-              orderId: orderId.toString(),
-              orderById: customerId,
-              orderByName, // <-- store properly
-              type: "video",
-              originalUrl: video.Location,
-              originalKey: video.Key,
-              thumbnailImageUrl: null,
-              thumbnailKey: null,
-              videoClipUrl: clip.Location,
-              videoClipKey: clip.Key,
-              mainFolderId,
-            });
-
-            return { type: "video", fileName: file.name };
-          } catch (err) {
-            console.error(`Video Upload/Mongo Error: ${file.name} | Attempt ${attempt} | ${err.message}`);
-            if (attempt >= maxRetries) throw err;
-            else continue; // retry
-          }
-        }
-      } finally {
-        // cleanup
-        [filePath, thumbnailPath, clipPath].forEach((p) => {
-          if (p && fs.existsSync(p)) {
-            try { fs.unlinkSync(p); } catch { }
-          }
-        });
+      // if (queue.length === 0 && !finished) {
+      //     console.log("Queue empty, fetching next batch...");
+      //   queue = await getNextBatch();
+      // }
+      if (queue.length < MAX_CONCURRENT && !finished) {
+        console.log("Prefetching more files.................");
+        const newBatch = await getNextBatch();
+        queue.push(...newBatch);
       }
+      await new Promise(resolve => setImmediate(resolve));
     }
+
+    return results;
   }
 
-  // ---------------- START ----------------
-  // initial batch fetch
-  await fetchNextBatch();
-  for (let i = 0; i < MAX_BATCH; i++) processNext();
+  const results = await startProcessing();
+  console.log("===== FINAL REPORT =====");
+  console.log("Total from Drive:", totalFromDrive);
+  console.log("Successfully Uploaded:", successCount);
+  console.log("Failed:", failCount);
+  console.log("========================");
+  // const uploadedFiles = await Promise.all(uploadPromises);
+  console.log("uploadedFiles -----------", results);
+  console.log("Upload completed for orderId:", orderId);
+  return results;
+  // await new Promise(resolve => setImmediate(resolve));
+
 }
+
+console.log("hello")
 
 async function uploadSingleImage({
   file,
