@@ -46,6 +46,7 @@ async function isFolderPubliclyAccessible(folderId, apiKey) {
 }
 async function downloadFile(url, dest) {
   const writer = fs.createWriteStream(dest);
+  try{
   const response = await axios({
     url,
     method: "GET",
@@ -56,6 +57,9 @@ async function downloadFile(url, dest) {
     writer.on("finish", resolve);
     writer.on("error", reject);
   });
+}catch(error){
+  console.log("ERROR DOWNLOADING DRIVE ................",error, "URL....... :", url, "DESTINATION .........", dest)
+}
 }
 
 async function handleDriveFolderUpload(
@@ -101,7 +105,11 @@ async function handleDriveFolderUpload(
 
 
       const downloadUrl = `https://drive.google.com/uc?export=download&id=${file.id}`;
+      console.log(`⬇️ DOWNLOAD STARTED: ${originalName} | Batch: ${file.batch}`);
+
       await downloadFile(downloadUrl, filePath);
+
+      console.log(`✅ DOWNLOAD COMPLETED: ${originalName} | Batch: ${file.batch}`);
 
       const isImage = file.mimeType.startsWith("image/");
       const isVideo = file.mimeType.startsWith("video/") || file.name.match(/\.(mp4|mov|mkv|webm)$/i);
@@ -231,11 +239,13 @@ async function handleDriveFolderUpload(
     //   return { fileName: file?.name, error: err.message };
     // } 
     catch (err) {
-  console.error(`Error processing ------------------- ${file?.name}:`, err.message);
+  console.error(`Error processing ------------------- ${file?.name}: 
+    failedFiles ARRAY  : ${failedFiles}
+    `, err.message);
   console.log(`Retry Count: ${retryCount}`);
 
   if (retryCount < 2) {
-    console.log(`--------------- Retrying ${file?.name} | Attempt ${retryCount + 2}`);
+    console.log(`--------------- Retrying ${file?.name} | Attempt ${retryCount + 2} | failedFiles ARRAY  : ${failedFiles}`);
     return processFile(file, retryCount + 1);
   } else {
     console.log(`Max retries reached for ${file?.name}`);
@@ -261,15 +271,21 @@ async function handleDriveFolderUpload(
     }
   }
 
-  const MAX_CONCURRENT = 10;
+  const MAX_CONCURRENT = 5;
   let activeCount = 0;
   let pageToken = null;
   let finished = false;
+  let batchNumber = 0;
 
   async function getNextBatch() {
     if (finished) return [];
 
-    let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=10`;
+       batchNumber++;   
+
+       console.log(`\n==============================`);
+       console.log(`📦 FETCHING BATCH ${batchNumber}`);
+       console.log(`==============================`);
+    let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=5`;
 
     if (pageToken) listUrl += `&pageToken=${pageToken}`;
 
@@ -277,13 +293,18 @@ async function handleDriveFolderUpload(
     const files = res.data.files || [];
     totalFromDrive += files.length;
 
+    console.log(`📦 Batch ${batchNumber} fetched files:`, files.length);
+
     console.log("📦 Drive batch fetched:", res.data.files?.length);
     console.log("EXT PAGE TOKEN :", res.data.nextPageToken);
 
     pageToken = res.data.nextPageToken;
     if (!pageToken) finished = true;
 
-    return files;
+    return files.map(file => ({
+  ...file,
+  batch: batchNumber
+}));
   }
 
   async function startProcessing() {
@@ -294,8 +315,9 @@ async function handleDriveFolderUpload(
 
       while (queue.length > 0 && activeCount < MAX_CONCURRENT) {
         const file = queue.shift();
-        console.log(" PROCESSING START START:", file.name, "| Active:", activeCount);
-        activeCount++;
+console.log(
+  `🚀 START PROCESSING: ${file.name} | Batch: ${file.batch}`
+);        activeCount++;
 
         processFile(file)
           .then(result => results.push(result))
@@ -303,7 +325,9 @@ async function handleDriveFolderUpload(
           .finally(() => {
 
             activeCount--;
-            console.log("DONE PROCESSING:", file.name, "| Active:", activeCount);
+            console.log(
+  `✅ DONE: ${file.name} | Batch: ${file.batch} | Active: ${activeCount}`
+);
 
           });
       }
@@ -319,6 +343,11 @@ async function handleDriveFolderUpload(
       }
       await new Promise(resolve => setImmediate(resolve));
     }
+
+if (finished && activeCount === 0) {
+  console.log(`\n🎉 ALL BATCHES COMPLETED`);
+  console.log(`Total Batches: ${batchNumber}`);
+}
 
     return results;
   }
@@ -392,3 +421,4 @@ async function uploadSingleImage({
 
 
 module.exports = { handleDriveFolderUpload, uploadSingleImage };
+// http://localhost:3001/weblink-gallery?folderName=23360_695755bea533d6d56bc521e7_9406754372&customerId=695755bea533d6d56bc521e7
