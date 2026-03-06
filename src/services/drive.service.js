@@ -384,14 +384,17 @@ if (finished && activeCount === 0) {
   console.log("uploadedFiles -----------", results);
   console.log("Upload completed for orderId:", orderId);
 
-const order_id = orderId;
-
-await OrderModel.findByIdAndUpdate(order_id, {
-  imageUploadCounts: {
-    totalFromDrive: totalFromDrive,
-    totalWeblink: successCount
+await OrderModel.findOneAndUpdate(
+  { order_id: orderId },
+  {
+    $set: {
+      imageUploadCounts: {
+        totalFromDrive: totalFromDrive,
+        totalWeblink: successCount
+      }
+    }
   }
-});
+);
 
   return results;
   // await new Promise(resolve => setImmediate(resolve));
