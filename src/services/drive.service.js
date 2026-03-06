@@ -2,6 +2,7 @@ const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 const WebLink = require("../models/weblink-images.js");
+const OrderModel = require("../models/order.js")
 
 const {
   generateThumbnail,
@@ -382,6 +383,16 @@ if (finished && activeCount === 0) {
   // const uploadedFiles = await Promise.all(uploadPromises);
   console.log("uploadedFiles -----------", results);
   console.log("Upload completed for orderId:", orderId);
+
+const order_id = orderId;
+
+await OrderModel.findByIdAndUpdate(order_id, {
+  imageUploadCounts: {
+    totalFromDrive: totalFromDrive,
+    totalWeblink: successCount
+  }
+});
+
   return results;
   // await new Promise(resolve => setImmediate(resolve));
 
