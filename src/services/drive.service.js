@@ -105,11 +105,11 @@ async function handleDriveFolderUpload(
 
 
       const downloadUrl = `https://drive.google.com/uc?export=download&id=${file.id}`;
-      console.log(`⬇️ DOWNLOAD STARTED: ${originalName} | Batch: ${file.batch}`);
+      console.log(`⬇️ STEP 1 DOWNLOAD STARTED: ${originalName} | Batch: ${file.batch}`);
 
       await downloadFile(downloadUrl, filePath);
 
-      console.log(`✅ DOWNLOAD COMPLETED: ${originalName} | Batch: ${file.batch}`);
+      console.log(`✅ STEP 2   DOWNLOAD COMPLETED: ${originalName} | Batch: ${file.batch}`);
 
       const isImage = file.mimeType.startsWith("image/");
       const isVideo = file.mimeType.startsWith("video/") || file.name.match(/\.(mp4|mov|mkv|webm)$/i);
@@ -128,13 +128,16 @@ async function handleDriveFolderUpload(
             folderPath,
             phoneNo
           );
+console.log("STEP 3 GENERATE THUMB START", file.name)
 
           await generateThumbnail(filePath, thumbnailPath);
+console.log("STEP 4 THUMB COMPLETE", file.name)
 
           const thumbFileName = `thumb_${fileName.replace(
             /\.(png|jpeg|jpg)$/i,
             ""
           )}.webp`;
+console.log("STEP 5 S3 UPLOAD START", file.name)
 
           const uploadThumb = uploadFileToS3(
             thumbnailPath,
@@ -147,6 +150,11 @@ async function handleDriveFolderUpload(
             uploadOriginal,
             uploadThumb,
           ]);
+
+console.log("STEP 6 S3 UPLOAD COMPLETE", file.name)
+
+          console.log("STEP 7 DB INSERT START", file.name)
+
           try {
             await WebLink.create({
               orderId: orderId.toString(),
@@ -169,6 +177,7 @@ async function handleDriveFolderUpload(
           catch (error) {
             console.log('create documnet error ------- image -------', error);
           }
+          console.log("STEP 8 DB INSERT DONE", file.name)
           successCount++;
           return { type: "image", fileName: originalName };
         }
@@ -183,7 +192,14 @@ async function handleDriveFolderUpload(
         clipPath = path.join(tempDir, `clip_${fileName}.mp4`);
 
         try {
+          console.log("STEP 3 GENERATE PREVIEW CLIP START", file.name)
+
           await generateVideoPreview(filePath, clipPath, 3);
+
+          console.log("STEP 4 VIDEO PREVIEW GENERATION COMPLETE", file.name)
+
+          console.log("STEP 5 VIDEO S3 UPLOAD VIDEO START", file.name)
+
 
           const uploadVideo = uploadFileToS3(
             filePath,
@@ -200,6 +216,8 @@ async function handleDriveFolderUpload(
             phoneNo,
             "video/mp4"
           );
+console.log("STEP 6 VIDEO S3 UPLOAD COMPLETE", file.name)
+console.log("STEP 7 VIDEO DB INSERT START", file.name)
 
           const [video, clip] = await Promise.all([uploadVideo, uploadClip]);
           try {
@@ -224,6 +242,7 @@ async function handleDriveFolderUpload(
           catch (error) {
             console.log('create documnet error ------- video -------', error);
           }
+          console.log("STEP 8 VIDEO DB INSERT DONE", file.name)
           successCount++;
           return { type: "video", fileName: originalName };
         }
@@ -245,7 +264,7 @@ async function handleDriveFolderUpload(
   console.log(`Retry Count: ${retryCount}`);
 
   if (retryCount < 2) {
-    console.log(`--------------- Retrying ${file?.name} | Attempt ${retryCount + 2} | failedFiles ARRAY  : ${failedFiles}`);
+    console.log(`--------------- RETRY START  ${file?.name} | Attempt ${retryCount + 2} | failedFiles ARRAY  : ${failedFiles}`);
     return processFile(file, retryCount + 1);
   } else {
     console.log(`Max retries reached for ${file?.name}`);
@@ -261,7 +280,9 @@ async function handleDriveFolderUpload(
       [filePath, thumbnailPath, clipPath].forEach((p) => {
         if (p && fs.existsSync(p)) {
           try {
+            console.log("DLETE START ------------")
             fs.unlinkSync(p);
+            console.log("DELETE SUCCESSFULLY ---------", p)
           }
           catch (error) {
             console.log('error deletng images ------catch ----', error, "filePath", filePath);
@@ -271,7 +292,7 @@ async function handleDriveFolderUpload(
     }
   }
 
-  const MAX_CONCURRENT = 5;
+  const MAX_CONCURRENT = 1;
   let activeCount = 0;
   let pageToken = null;
   let finished = false;
@@ -285,7 +306,7 @@ async function handleDriveFolderUpload(
        console.log(`\n==============================`);
        console.log(`📦 FETCHING BATCH ${batchNumber}`);
        console.log(`==============================`);
-    let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=5`;
+    let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1`;
 
     if (pageToken) listUrl += `&pageToken=${pageToken}`;
 
@@ -302,9 +323,9 @@ async function handleDriveFolderUpload(
     if (!pageToken) finished = true;
 
     return files.map(file => ({
-  ...file,
-  batch: batchNumber
-}));
+     ...file,
+     batch: batchNumber
+    }));
   }
 
   async function startProcessing() {
@@ -332,15 +353,15 @@ console.log(
           });
       }
 
-      // if (queue.length === 0 && !finished) {
-      //     console.log("Queue empty, fetching next batch...");
-      //   queue = await getNextBatch();
-      // }
-      if (queue.length < MAX_CONCURRENT && !finished) {
-        console.log("Prefetching more files.................");
-        const newBatch = await getNextBatch();
-        queue.push(...newBatch);
+      if (queue.length === 0 && !finished) {
+          console.log("QUEUE EMPTY, FETCHING NEXT BATCH FORM DRIVE ---------------...........");
+        queue = await getNextBatch();
       }
+      // if (queue.length < MAX_CONCURRENT && !finished) {
+      //   console.log("Prefetching more files.................");
+      //   const newBatch = await getNextBatch();
+      //   queue.push(...newBatch);
+      // }
       await new Promise(resolve => setImmediate(resolve));
     }
 
@@ -366,7 +387,6 @@ if (finished && activeCount === 0) {
 
 }
 
-console.log("hello")
 
 async function uploadSingleImage({
   file,
