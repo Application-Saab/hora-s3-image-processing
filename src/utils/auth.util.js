@@ -39,6 +39,29 @@ const uploadFileToS3 = async (
   return s3.upload(params).promise();
 };
 
+const uploadFileToS3Wonderland = async ({
+  filePath,
+  key,
+  contentType = "application/octet-stream",
+  phoneNo,
+}) => {
+  const fileStream = fs.createReadStream(filePath);
+
+  const params = {
+    Bucket: process.env.S3_BUCKET_NAME,
+    Key: key,
+    Body: fileStream,
+    ContentType: contentType,
+    ...(phoneNo && {
+      Metadata: {
+        phoneNo: String(phoneNo),
+      },
+    }),
+  };
+
+  return s3.upload(params).promise();
+};
+
 // =======================
 // Generate Thumbnail
 // =======================
@@ -101,7 +124,13 @@ const fileFilter = (req, file, cb) => {
 };
 
 
-const upload = multer({storage});
+const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB
+  },
+});
 
 
 const generateVideoPreview = (inputPath, outputPath, duration = 4, start = 0) => {
@@ -131,6 +160,7 @@ const generateVideoPreview = (inputPath, outputPath, duration = 4, start = 0) =>
 
 module.exports = {
   uploadFileToS3,
+  uploadFileToS3Wonderland,
   generateThumbnail,
   generateVideoPreview,
   upload,
