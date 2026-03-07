@@ -387,11 +387,10 @@ if (finished && activeCount === 0) {
 await OrderModel.findOneAndUpdate(
   { order_id: orderId },
   {
-    $set: {
-      imageUploadCounts: {
-        totalFromDrive: totalFromDrive,
-        totalWeblink: successCount
-      }
+      $set: {
+      "imageUploadCounts.totalFromDrive": totalFromDrive,
+      "imageUploadCounts.totalWeblink": successCount,
+      "imageUploadCounts.AllImagesUploadedAt": new Date()
     }
   }
 );

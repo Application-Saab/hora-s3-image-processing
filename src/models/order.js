@@ -51,7 +51,9 @@ const orderSchema = new mongoose.Schema({
 imageUploadCounts: {
   type: {
     totalFromDrive: { type: Number, default: 0 },
-    totalWeblink: { type: Number, default: 0 }
+    totalWeblink: { type: Number, default: 0 },
+    driveProvidedAt: {type:Date, default: ''},
+    AllImagesUploadedAt:{type:Date, default: ''},
   },
   default: {}
 }
