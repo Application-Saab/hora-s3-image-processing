@@ -331,7 +331,7 @@ router.post("/upload-multiple", upload.array("images"), async (req, res) => {
 //admin panel create folder
 router.post("/upload", upload.array("files"), async (req, res) => {
   try {
-    const { folderName, customerId, vendorId, phoneNo } = req.body;
+    const { folderName, customerId, vendorId, phoneNo, isWeblink=true } = req.body;
 
     if (!folderName || !customerId) {
       return res
@@ -353,9 +353,10 @@ router.post("/upload", upload.array("files"), async (req, res) => {
       return res.status(400).json({ message: "No files were uploaded." });
     }
 
-    const folderPath = vendorId
-      ? `${folderName}_${customerId}_${vendorId}`
-      : `${folderName}_${customerId}`;
+    const folderPath =  isWeblink ?
+     folderName : vendorId  ? 
+     `${folderName}_${customerId}_${vendorId}` :
+     `${folderName}_${customerId}`; 
 
     const uploadedFiles = [];
 
@@ -472,7 +473,7 @@ router.post("/upload", upload.array("files"), async (req, res) => {
           error: error.message,
         });
       } finally {
-        // ✅ Guaranteed cleanup
+        
         const paths = [filePath, thumbPath, clipPath];
 
         for (const p of paths) {
