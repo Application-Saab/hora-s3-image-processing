@@ -394,7 +394,7 @@ router.post("/upload", upload.array("files"), async (req, res) => {
             "image/webp"
           );
 
-          await WebLink.create({
+          const saveDoc = await WebLink.create({
             orderId: vendorId ? vendorId.toString() : folderName,
             orderById: customerId,
             orderByName: phoneNo || "",
@@ -412,6 +412,7 @@ router.post("/upload", upload.array("files"), async (req, res) => {
             fileName: file.originalname,
             imageUrl: originalRes.Location,
             thumbnailUrl: thumbRes.Location,
+            imageId: saveDoc._id,
           });
         }
 
@@ -504,6 +505,75 @@ router.post("/upload", upload.array("files"), async (req, res) => {
     });
   }
 });
+router.put(
+  "/update-subfolder-dp",
+  uploadSingel.single("image"),
+  async (req, res) => {
+    const { folderId, subFolderId } = req.body;
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({ message: "No image uploaded" });
+    }
+
+    try {
+      const folder = await Folder.findById(folderId);
+      if (!folder) {
+        return res.status(404).json({ message: "Folder not found" });
+      }
+
+      const subFolder = folder.subFolders.id(subFolderId);
+      if (!subFolder) {
+        return res.status(404).json({ message: "Subfolder not found" });
+      }
+
+      // delete old images
+      const keysToDelete = [];
+
+      if (subFolder.folderDp?.s3Key) {
+        keysToDelete.push({ Key: subFolder.folderDp.s3Key });
+      }
+
+      if (keysToDelete.length > 0) {
+        await s3.deleteObjects({
+          Bucket: process.env.S3_BUCKET_NAME,
+          Delete: { Objects: keysToDelete },
+        }).promise();
+      }
+
+      // upload new image
+      const fileStream = fs.createReadStream(file.path);
+
+      const uploadResult = await s3.upload({
+        Bucket: process.env.S3_BUCKET_NAME,
+        Key: `subfolder-dp/${Date.now()}_${file.originalname}`,
+        Body: fileStream,
+        ContentType: file.mimetype,
+      }).promise();
+
+      // save in DB
+      subFolder.folderDp = {
+        fileUrl: uploadResult.Location,
+        thumbnailUrl: uploadResult.Location,
+        s3Key: uploadResult.Key,
+      };
+
+      await folder.save();
+
+      // delete temp file
+      fs.unlinkSync(file.path);
+
+      res.json({
+        message: "Subfolder DP updated successfully",
+        data: subFolder.folderDp,
+      });
+
+    } catch (err) {
+      console.error("Update failed:", err);
+      res.status(500).json({ message: "Server error", error: err.message });
+    }
+  }
+);
 
 module.exports = router;
 
