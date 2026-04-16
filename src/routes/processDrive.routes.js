@@ -88,7 +88,7 @@ router.post("/process-drive", async (req, res) => {
 
 router.post("/create-subfolder", uploadSingel.single("file"), async (req, res) => {
   try {
-    const { 
+    const {
       folderName,
       type,
       userId,
@@ -191,7 +191,7 @@ router.post("/upload-multiple", upload.array("images"), async (req, res) => {
         .json({ message: "orderId and customerId are required" });
     }
 
-    const folderPath = folderName; 
+    const folderPath = folderName;
 
     const results = [];
 
@@ -353,10 +353,10 @@ router.post("/upload", upload.array("files"), async (req, res) => {
       return res.status(400).json({ message: "No files were uploaded." });
     }
 
-    const folderPath =  isWeblink ?
-     folderName : vendorId  ? 
-     `${folderName}_${customerId}_${vendorId}` :
-     `${folderName}_${customerId}`; 
+    const folderPath = isWeblink ?
+      folderName : vendorId ?
+        `${folderName}_${customerId}_${vendorId}` :
+        `${folderName}_${customerId}`;
 
     const uploadedFiles = [];
 
@@ -474,7 +474,7 @@ router.post("/upload", upload.array("files"), async (req, res) => {
           error: error.message,
         });
       } finally {
-        
+
         const paths = [filePath, thumbPath, clipPath];
 
         for (const p of paths) {
@@ -509,7 +509,7 @@ router.put(
   "/update-subfolder-dp",
   uploadSingel.single("image"),
   async (req, res) => {
-    const { folderId, subFolderId } = req.body;
+    const { folderId, subFolderId, phoneNo } = req.body;
     const file = req.file;
 
     if (!file) {
@@ -527,11 +527,15 @@ router.put(
         return res.status(404).json({ message: "Subfolder not found" });
       }
 
-      // delete old images
+      // ================= DELETE OLD =================
       const keysToDelete = [];
 
       if (subFolder.folderDp?.s3Key) {
         keysToDelete.push({ Key: subFolder.folderDp.s3Key });
+      }
+
+      if (subFolder.folderDp?.thumbnailKey) {
+        keysToDelete.push({ Key: subFolder.folderDp.thumbnailKey });
       }
 
       if (keysToDelete.length > 0) {
@@ -541,28 +545,60 @@ router.put(
         }).promise();
       }
 
-      // upload new image
-      const fileStream = fs.createReadStream(file.path);
+      // ================= NEW UPLOAD =================
+      const filePath = file.path;
+      const fileName = file.filename;
 
-      const uploadResult = await s3.upload({
-        Bucket: process.env.S3_BUCKET_NAME,
-        Key: `subfolder-dp/${Date.now()}_${file.originalname}`,
-        Body: fileStream,
-        ContentType: file.mimetype,
-      }).promise();
+      const thumbName = `thumb_${fileName}.webp`;
+      const thumbPath = path.join(TEMP_DIR, thumbName);
 
-      // save in DB
+      await generateThumbnail(filePath, thumbPath);
+
+      // safer phone
+      const safePhone =
+        phoneNo && typeof phoneNo === "string"
+          ? phoneNo.replace(/[^0-9]/g, "")
+          : "unknown";
+
+      const originalRes = await uploadFileToS3(
+        filePath,
+        fileName,
+        "subfolder-dp",
+        safePhone,
+        file.mimetype
+      );
+
+      const thumbRes = await uploadFileToS3(
+        thumbPath,
+        thumbName,
+        "subfolder-dp",
+        safePhone,
+        "image/webp"
+      );
+
+      // ================= SAVE IN DB =================
       subFolder.folderDp = {
-        fileUrl: uploadResult.Location,
-        thumbnailUrl: uploadResult.Location,
-        s3Key: uploadResult.Key,
+        fileUrl: originalRes.Location,
+        s3Key: originalRes.Key,
+
+        thumbnailUrl: thumbRes.Location,
+        thumbnailKey: thumbRes.Key,
       };
 
       await folder.save();
 
-      // delete temp file
-      fs.unlinkSync(file.path);
+      // ================= CLEANUP =================
+      [filePath, thumbPath].forEach((p) => {
+        if (p && fs.existsSync(p)) {
+          try {
+            fs.unlinkSync(p);
+          } catch (err) {
+            console.error("Delete failed:", p);
+          }
+        }
+      });
 
+      // ================= RESPONSE =================
       res.json({
         message: "Subfolder DP updated successfully",
         data: subFolder.folderDp,
@@ -570,7 +606,10 @@ router.put(
 
     } catch (err) {
       console.error("Update failed:", err);
-      res.status(500).json({ message: "Server error", error: err.message });
+      res.status(500).json({
+        message: "Server error",
+        error: err.message,
+      });
     }
   }
 );
