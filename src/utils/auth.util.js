@@ -1,12 +1,11 @@
-const fs = require("fs");                 // for readFileSync
-const fsPromise = require('fs').promises;
+const fs = require("fs"); // for readFileSync
+const fsPromise = require("fs").promises;
 const sharp = require("sharp");
 const AWS = require("aws-sdk");
 const multer = require("multer");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
-require('dotenv').config();
-
+require("dotenv").config();
 
 // AWS S3 config
 const s3 = new AWS.S3({
@@ -23,14 +22,14 @@ const uploadFileToS3 = async (
   fileName,
   folderPath,
   phoneNo,
-  contentType
+  contentType,
 ) => {
   console.log("Uploading to S3:", fileName);
 
-if (fs.existsSync(filePath)) {
-  const stats = fs.statSync(filePath);
-  console.log("Upload file size (KB):", (stats.size / 1024).toFixed(2));
-}
+  if (fs.existsSync(filePath)) {
+    const stats = fs.statSync(filePath);
+    console.log("Upload file size (KB):", (stats.size / 1024).toFixed(2));
+  }
 
   const fileContent = fs.readFileSync(filePath);
 
@@ -38,7 +37,7 @@ if (fs.existsSync(filePath)) {
     Bucket: process.env.S3_BUCKET_NAME,
     Key: `${folderPath}/${fileName}`,
     Body: fileContent,
-    ContentType: contentType || 'image/jpeg',
+    ContentType: contentType || "image/jpeg",
     Metadata: {
       phoneNo: phoneNo,
     },
@@ -46,17 +45,17 @@ if (fs.existsSync(filePath)) {
 
   // return s3.upload(params).promise();
   try {
-  const result = await s3.upload(params).promise();
-  console.log("UPLOAD SUCCESS:", fileName);
-  return result;
-} catch (err) {
-  console.log("❌ S3 UPLOAD ERROR for:", fileName);
-  console.log("Status Code:", err.statusCode);
-  console.log("Error Code:", err.code);
-  console.log("Error Message:", err.message);
-  console.log("Full Error:", JSON.stringify(err, null, 2));
-  throw err;
-}
+    const result = await s3.upload(params).promise();
+    console.log("UPLOAD SUCCESS:", fileName);
+    return result;
+  } catch (err) {
+    console.log("❌ S3 UPLOAD ERROR for:", fileName);
+    console.log("Status Code:", err.statusCode);
+    console.log("Error Code:", err.code);
+    console.log("Error Message:", err.message);
+    console.log("Full Error:", JSON.stringify(err, null, 2));
+    throw err;
+  }
 };
 
 const uploadFileToS3Wonderland = async ({
@@ -106,7 +105,7 @@ const generateThumbnail = async (inputPath, outputPath) => {
     console.log(
       `Thumbnail saved at: ${outputPath} (Size: ${(
         finalBuffer.length / 1024
-      ).toFixed(2)} KB)`
+      ).toFixed(2)} KB)`,
     );
   } catch (error) {
     console.error("Error generating thumbnail:", error);
@@ -119,59 +118,61 @@ const TEMP_DIR = path.join(process.cwd(), "tempUploads");
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadPath = path.join(__dirname, 'tempUploads');
-        if (!fs.existsSync(uploadPath)) {
-            fs.mkdirSync(uploadPath, { recursive: true });
-        }
-        cb(null, uploadPath);
-    },
-    filename: (req, file, cb) => {
-        cb(null, `${Date.now()}_${file.originalname}`);
+  destination: (req, file, cb) => {
+    const uploadPath = path.join(__dirname, "tempUploads");
+    if (!fs.existsSync(uploadPath)) {
+      fs.mkdirSync(uploadPath, { recursive: true });
     }
+    cb(null, uploadPath);
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}_${file.originalname}`);
+  },
 });
 
-
-const upload = multer({storage});
-
-
+const upload = multer({ storage });
 
 try {
-  const ffmpegStatic = require('ffmpeg-static');
+  const ffmpegStatic = require("ffmpeg-static");
   if (ffmpegStatic) ffmpeg.setFfmpegPath(ffmpegStatic);
 } catch (e) {
   // ffmpeg-static not installed — fluent-ffmpeg will try system ffmpeg (/usr/bin/ffmpeg)
 }
 
-const generateVideoPreview = (inputPath, outputPath, duration = 4, start = 0) => {
+const generateVideoPreview = (
+  inputPath,
+  outputPath,
+  duration = 4,
+  start = 0,
+) => {
   return new Promise((resolve, reject) => {
     // ensure output dir exists
-    const startTime = Date.now();  
-        console.log("🎬 Video preview generation started...");
+    const startTime = Date.now();
+    console.log("🎬 Video preview generation started...");
 
     const outDir = path.dirname(outputPath);
     if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
     ffmpeg(inputPath)
-      .setStartTime(start)               // start from beginning or a small offset
-      .setDuration(duration)             // seconds
-      .videoCodec('libx264')             // re-encode for compatibility & size
+      .setStartTime(start) // start from beginning or a small offset
+      .setDuration(duration) // seconds
+      .videoCodec("libx264") // re-encode for compatibility & size
       .outputOptions([
-        '-crf 28',                       // quality (higher -> smaller)
-        '-preset veryfast',              // speed
-        '-movflags +faststart',          // streaming friendly
-        '-pix_fmt yuv420p',              // compatibility
-        '-an'                            // remove audio to reduce size (optional)
+        "-crf 28", // quality (higher -> smaller)
+        "-preset veryfast", // speed
+        "-movflags +faststart", // streaming friendly
+        "-pix_fmt yuv420p", // compatibility
+        "-an", // remove audio to reduce size (optional)
       ])
-      .size('640x?')                     // scale width to 640, keep aspect
-      .on('end', () => {
+      .size("640x?") // scale width to 640, keep aspect
+      .on("end", () => {
         const endTime = Date.now();
         const timeTaken = ((endTime - startTime) / 1000).toFixed(2);
 
         console.log(`✅ Video preview generated in ${timeTaken} seconds`);
         resolve(outputPath);
       })
-      .on('error', (err) => {
+      .on("error", (err) => {
         const endTime = Date.now();
         const timeTaken = ((endTime - startTime) / 1000).toFixed(2);
 
@@ -181,7 +182,6 @@ const generateVideoPreview = (inputPath, outputPath, duration = 4, start = 0) =>
       .save(outputPath);
   });
 };
-
 
 module.exports = {
   uploadFileToS3,
