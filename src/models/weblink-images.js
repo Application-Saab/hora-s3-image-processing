@@ -6,20 +6,35 @@ const weblinkSchema = new mongoose.Schema(
       type: String,
       default: () => new mongoose.Types.ObjectId().toString(),
     },
-     mainFolderId: {
+    mainFolderId: {
       type: String,
       trim: true,
       index: true,
       default: null,
     },
 
-  orderId: {
-   type: String, // changed from ObjectId
-   ref: "order",
-   required: true,
-   index: true,
+    orderId: {
+      type: String, // changed from ObjectId
+      ref: "order",
+      required: true,
+      index: true,
 
-   },
+    },
+
+    fileId: {
+      type: String,
+      unique: true,
+      sparse: true,
+    },
+    status: {
+      type: String,
+      enum: ["uploading", "done", "failed"],
+      default: "uploading",
+    },
+    retryCount: {
+      type: Number,
+      default: 0,
+    },
 
     orderById: {
       type: String,
@@ -45,12 +60,12 @@ const weblinkSchema = new mongoose.Schema(
       trim: true,
     },
 
-    originalKey: {
-      type: String,
-      required: true,
-      trim: true,
-      unique: true,
-    },
+   originalKey: {
+  type: String,
+  unique: true,
+  sparse: true, 
+  default: null
+},
 
     thumbnailImageUrl: {
       type: String,
@@ -77,6 +92,11 @@ const weblinkSchema = new mongoose.Schema(
       default: [],
       index: true,
     },
+    likedBy: {
+      type: [String], 
+      default: [],
+      index: true,
+    }
   },
   {
     timestamps: true,
