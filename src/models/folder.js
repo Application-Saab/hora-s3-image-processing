@@ -81,8 +81,8 @@ const FolderSchema = new mongoose.Schema(
           index: true,
         },
         folderDp: {
-  fileUrl: { type: String, required: true },
-  thumbnailUrl: { type: String, required: true },
+  fileUrl: { type: String },
+  thumbnailUrl: { type: String },
   s3Key: { type: String },
   thumbnailKey: { type: String }
 },
