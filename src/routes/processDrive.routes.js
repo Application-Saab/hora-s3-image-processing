@@ -88,7 +88,7 @@ router.post("/process-drive", async (req, res) => {
 
 router.post("/create-subfolder", uploadSingel.single("file"), async (req, res) => {
   try {
-    const { 
+    const {
       folderName,
       type,
       userId,
@@ -191,7 +191,7 @@ router.post("/upload-multiple", upload.array("images"), async (req, res) => {
         .json({ message: "orderId and customerId are required" });
     }
 
-    const folderPath = folderName; 
+    const folderPath = folderName;
 
     const results = [];
 
@@ -353,10 +353,10 @@ router.post("/upload", upload.array("files"), async (req, res) => {
       return res.status(400).json({ message: "No files were uploaded." });
     }
 
-    const folderPath =  isWeblink ?
-     folderName : vendorId  ? 
-     `${folderName}_${customerId}_${vendorId}` :
-     `${folderName}_${customerId}`; 
+    const folderPath = isWeblink ?
+      folderName : vendorId ?
+        `${folderName}_${customerId}_${vendorId}` :
+        `${folderName}_${customerId}`;
 
     const uploadedFiles = [];
 
@@ -394,7 +394,7 @@ router.post("/upload", upload.array("files"), async (req, res) => {
             "image/webp"
           );
 
-          await WebLink.create({
+          const saveDoc = await WebLink.create({
             orderId: vendorId ? vendorId.toString() : folderName,
             orderById: customerId,
             orderByName: phoneNo || "",
@@ -412,6 +412,7 @@ router.post("/upload", upload.array("files"), async (req, res) => {
             fileName: file.originalname,
             imageUrl: originalRes.Location,
             thumbnailUrl: thumbRes.Location,
+            imageId: saveDoc._id,
           });
         }
 
@@ -473,7 +474,7 @@ router.post("/upload", upload.array("files"), async (req, res) => {
           error: error.message,
         });
       } finally {
-        
+
         const paths = [filePath, thumbPath, clipPath];
 
         for (const p of paths) {
@@ -504,6 +505,114 @@ router.post("/upload", upload.array("files"), async (req, res) => {
     });
   }
 });
+router.put(
+  "/update-subfolder-dp",
+  uploadSingel.single("image"),
+  async (req, res) => {
+    const { folderId, subFolderId, phoneNo } = req.body;
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({ message: "No image uploaded" });
+    }
+
+    try {
+      const folder = await Folder.findById(folderId);
+      if (!folder) {
+        return res.status(404).json({ message: "Folder not found" });
+      }
+
+      const subFolder = folder.subFolders.id(subFolderId);
+      if (!subFolder) {
+        return res.status(404).json({ message: "Subfolder not found" });
+      }
+
+      // ================= DELETE OLD =================
+      const keysToDelete = [];
+
+      if (subFolder.folderDp?.s3Key) {
+        keysToDelete.push({ Key: subFolder.folderDp.s3Key });
+      }
+
+      if (subFolder.folderDp?.thumbnailKey) {
+        keysToDelete.push({ Key: subFolder.folderDp.thumbnailKey });
+      }
+
+      if (keysToDelete.length > 0) {
+        await s3.deleteObjects({
+          Bucket: process.env.S3_BUCKET_NAME,
+          Delete: { Objects: keysToDelete },
+        }).promise();
+      }
+
+      // ================= NEW UPLOAD =================
+      const filePath = file.path;
+      const fileName = file.filename;
+
+      const thumbName = `thumb_${fileName}.webp`;
+      const thumbPath = path.join(TEMP_DIR, thumbName);
+
+      await generateThumbnail(filePath, thumbPath);
+
+      // safer phone
+      const safePhone =
+        phoneNo && typeof phoneNo === "string"
+          ? phoneNo.replace(/[^0-9]/g, "")
+          : "unknown";
+
+      const originalRes = await uploadFileToS3(
+        filePath,
+        fileName,
+        "subfolder-dp",
+        safePhone,
+        file.mimetype
+      );
+
+      const thumbRes = await uploadFileToS3(
+        thumbPath,
+        thumbName,
+        "subfolder-dp",
+        safePhone,
+        "image/webp"
+      );
+
+      // ================= SAVE IN DB =================
+      subFolder.folderDp = {
+        fileUrl: originalRes.Location,
+        s3Key: originalRes.Key,
+
+        thumbnailUrl: thumbRes.Location,
+        thumbnailKey: thumbRes.Key,
+      };
+
+      await folder.save();
+
+      // ================= CLEANUP =================
+      [filePath, thumbPath].forEach((p) => {
+        if (p && fs.existsSync(p)) {
+          try {
+            fs.unlinkSync(p);
+          } catch (err) {
+            console.error("Delete failed:", p);
+          }
+        }
+      });
+
+      // ================= RESPONSE =================
+      res.json({
+        message: "Subfolder DP updated successfully",
+        data: subFolder.folderDp,
+      });
+
+    } catch (err) {
+      console.error("Update failed:", err);
+      res.status(500).json({
+        message: "Server error",
+        error: err.message,
+      });
+    }
+  }
+);
 
 module.exports = router;
 
