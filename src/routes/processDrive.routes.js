@@ -329,14 +329,415 @@ router.post("/upload-multiple", upload.array("images"), async (req, res) => {
 });
 
 //admin panel create folder
+// router.post("/upload", upload.array("files"), async (req, res) => {
+//   try {
+//     const { folderName, customerId, vendorId, phoneNo, isWeblink=true, fileId } = req.body;
+
+//     if (!fileId) {
+//     return res.status(400).json({ message: "fileId is required" });
+//     }
+
+//     if (!folderName || !customerId) {
+//       return res
+//         .status(400)
+//         .json({ message: "Folder Name and Customer ID are required." });
+//     }
+
+//     const folder = await Folder.findOne({ folderName }).lean();
+
+//     if (!folder) {
+//       return res.status(404).json({
+//         message: "Folder not found",
+//       });
+//     }
+
+//     const mainFolderId = folder._id;
+
+//     if (!req.files || req.files.length === 0) {
+//       return res.status(400).json({ message: "No files were uploaded." });
+//     }
+
+//     const folderPath =  isWeblink ?
+//      folderName : vendorId  ? 
+//      `${folderName}_${customerId}_${vendorId}` :
+//      `${folderName}_${customerId}`; 
+
+//     const uploadedFiles = [];
+
+//     for (const file of req.files) {
+//       const filePath = file.path;
+//       const fileName = file.filename;
+
+//       const isImage = file.mimetype.startsWith("image/");
+//       const isVideo = file.mimetype.startsWith("video/");
+
+//       let thumbPath;
+//       let clipPath;
+
+//       try {
+//         // ================= IMAGE =================
+//         if (isImage) {
+//           const thumbName = `thumb_${fileName}.webp`;
+//           thumbPath = path.join(TEMP_DIR, thumbName);
+
+//           await generateThumbnail(filePath, thumbPath);
+
+//           const originalRes = await uploadFileToS3(
+//             filePath,
+//             fileName,
+//             folderPath,
+//             phoneNo,
+//             file.mimetype
+//           );
+
+//           const thumbRes = await uploadFileToS3(
+//             thumbPath,
+//             thumbName,
+//             folderPath,
+//             phoneNo,
+//             "image/webp"
+//           );
+
+//           await WebLink.create({
+//             orderId: vendorId ? vendorId.toString() : folderName,
+//             orderById: customerId,
+//             orderByName: phoneNo || "",
+//             type: "image",
+//             originalUrl: originalRes.Location,
+//             originalKey: originalRes.Key,
+//             thumbnailImageUrl: thumbRes.Location,
+//             thumbnailKey: thumbRes.Key,
+//             videoClipUrl: null,
+//             videoClipKey: null,
+//             mainFolderId,
+//           });
+
+//           uploadedFiles.push({
+//             fileName: file.originalname,
+//             imageUrl: originalRes.Location,
+//             thumbnailUrl: thumbRes.Location,
+//           });
+//         }
+
+//         // ================= VIDEO =================
+//         else if (isVideo) {
+//           const clipName = `clip_${fileName}.mp4`;
+//           clipPath = path.join(TEMP_DIR, clipName);
+
+//           await generateVideoPreview(filePath, clipPath, 3);
+
+//           const videoRes = await uploadFileToS3(
+//             filePath,
+//             fileName,
+//             folderPath,
+//             phoneNo,
+//             file.mimetype
+//           );
+
+//           const clipRes = await uploadFileToS3(
+//             clipPath,
+//             clipName,
+//             folderPath,
+//             phoneNo,
+//             "video/mp4"
+//           );
+
+//           await WebLink.create({
+//             orderId: vendorId ? vendorId.toString() : folderName,
+//             orderById: customerId,
+//             orderByName: phoneNo || "",
+//             type: "video",
+//             originalUrl: videoRes.Location,
+//             originalKey: videoRes.Key,
+//             thumbnailImageUrl: null,
+//             thumbnailKey: null,
+//             videoClipUrl: clipRes.Location,
+//             videoClipKey: clipRes.Key,
+//             mainFolderId,
+//           });
+
+//           uploadedFiles.push({
+//             fileName: file.originalname,
+//             videoUrl: videoRes.Location,
+//             clipUrl: clipRes.Location,
+//           });
+//         }
+
+//         else {
+//           uploadedFiles.push({
+//             fileName: file.originalname,
+//             error: "Unsupported file type",
+//           });
+//         }
+
+//       } catch (error) {
+//         console.error(`Error processing ${fileName}:`, error.message);
+//         uploadedFiles.push({
+//           fileName: file.originalname,
+//           error: error.message,
+//         });
+//       } finally {
+        
+//         const paths = [filePath, thumbPath, clipPath];
+
+//         for (const p of paths) {
+//           if (!p) continue;
+
+//           try {
+//             await fsPromises.unlink(p);
+//             console.log("Deleted:", p);
+//           } catch (err) {
+//             if (err.code !== "ENOENT") {
+//               console.error("Delete failed:", p, err.message);
+//             }
+//           }
+//         }
+//       }
+//     }
+
+//     return res.status(201).json({
+//       message: "Files uploaded successfully.",
+//       files: uploadedFiles,
+//     });
+
+//   } catch (error) {
+//     console.error("Upload error:", error);
+//     return res.status(500).json({
+//       message: "Server error",
+//       error: error.message,
+//     });
+//   }
+// });
+
+// router.post("/upload", upload.array("files"), async (req, res) => {
+//   try {
+//     const {
+//       folderName,
+//       customerId,
+//       vendorId,
+//       phoneNo,
+//       isWeblink = true,
+//       fileId,
+//     } = req.body;
+
+//     // if (!fileId) {
+//     //   return res.status(400).json({ message: "fileId is required" });
+//     // }
+
+//     if (!folderName || !customerId) {
+//       return res
+//         .status(400)
+//         .json({ message: "Folder Name and Customer ID are required." });
+//     }
+
+//     const folder = await Folder.findOne({ folderName }).lean();
+//     if (!folder) {
+//       return res.status(404).json({ message: "Folder not found" });
+//     }
+
+//     const mainFolderId = folder._id;
+
+//     if (!req.files || req.files.length === 0) {
+//       return res.status(400).json({ message: "No files were uploaded." });
+//     }
+
+//     const folderPath = isWeblink
+//       ? folderName
+//       : vendorId
+//         ? `${folderName}_${customerId}_${vendorId}`
+//         : `${folderName}_${customerId}`;
+
+//     const uploadedFiles = [];
+
+//     // ================= LOOP START =================
+//     for (const file of req.files) {
+//       // const uniqueFileId = `${fileId}_${file.filename}`; // ✅ UNIQUE ID PER FILE
+//       const uniqueFileId = fileId;
+//       const filePath = file.path;
+//       const fileName = file.filename;
+//       const isImage = file.mimetype.startsWith("image/");
+//       const isVideo = file.mimetype.startsWith("video/");
+
+//       let thumbPath;
+//       let clipPath;
+//       let finalUpdateData = {};
+
+//       try {
+//         // ================= CHECK EXISTING =================
+//         let existing = await WebLink.findOne({ fileId: uniqueFileId });
+
+//         if (existing) {
+//           if (existing.status === "done") {
+//             uploadedFiles.push(existing);
+//             continue;
+//           }
+
+//           if (existing.status === "uploading") {
+//             uploadedFiles.push(existing);
+//             continue;
+//           }
+
+//           if (existing.status === "failed") {
+//             await WebLink.updateOne(
+//               { fileId: uniqueFileId },
+//               {
+//                 status: "uploading",
+//                 $inc: { retryCount: 1 },
+//               },
+//             );
+//           }
+//         } else {
+//           await WebLink.create({
+//             fileId: uniqueFileId,
+//             orderId: vendorId ? vendorId.toString() : folderName,
+//             orderById: customerId,
+//             orderByName: phoneNo || "",
+//             status: "uploading",
+//             mainFolderId,
+//             type: isVideo ? "video" : "image",
+//             originalUrl: "pending",
+//             originalKey: `pending_${uniqueFileId}_${Date.now()}`,
+//           });
+//         }
+
+//         // ================= IMAGE =================
+//         if (isImage) {
+//           const thumbName = `thumb_${fileName}.webp`;
+//           thumbPath = path.join(TEMP_DIR, thumbName);
+
+//           await generateThumbnail(filePath, thumbPath);
+
+//           const originalRes = await uploadFileToS3(
+//             filePath,
+//             fileName,
+//             folderPath,
+//             phoneNo,
+//             file.mimetype,
+//           );
+
+//           const thumbRes = await uploadFileToS3(
+//             thumbPath,
+//             thumbName,
+//             folderPath,
+//             phoneNo,
+//             "image/webp",
+//           );
+
+//           finalUpdateData = {
+//             type: "image",
+//             originalUrl: originalRes.Location,
+//             originalKey: originalRes.Key,
+//             thumbnailImageUrl: thumbRes.Location,
+//             thumbnailKey: thumbRes.Key,
+//           };
+//         }
+
+//         // ================= VIDEO =================
+//         else if (isVideo) {
+//           const clipName = `clip_${fileName}.mp4`;
+//           clipPath = path.join(TEMP_DIR, clipName);
+
+//           await generateVideoPreview(filePath, clipPath, 3);
+
+//           const videoRes = await uploadFileToS3(
+//             filePath,
+//             fileName,
+//             folderPath,
+//             phoneNo,
+//             file.mimetype,
+//           );
+
+//           const clipRes = await uploadFileToS3(
+//             clipPath,
+//             clipName,
+//             folderPath,
+//             phoneNo,
+//             "video/mp4",
+//           );
+
+//           finalUpdateData = {
+//             type: "video",
+//             originalUrl: videoRes.Location,
+//             originalKey: videoRes.Key,
+//             videoClipUrl: clipRes.Location,
+//             videoClipKey: clipRes.Key,
+//           };
+//         } else {
+//           throw new Error("Unsupported file type");
+//         }
+
+//         // ================= UPDATE DONE =================
+//         const updatedDoc = await WebLink.findOneAndUpdate(
+//           { fileId: uniqueFileId }, // ✅ FIXED
+//           {
+//             ...finalUpdateData,
+//             status: "done",
+//           },
+//           { new: true },
+//         );
+
+//         uploadedFiles.push(updatedDoc);
+//       } catch (error) {
+//         console.error(`Error processing ${fileName}:`, error.message);
+
+//         // ================= UPDATE FAILED =================
+//         await WebLink.updateOne(
+//           { fileId: uniqueFileId }, // ✅ FIXED
+//           { status: "failed" },
+//         );
+
+//         uploadedFiles.push({
+//           fileName: file.originalname,
+//           error: error.message,
+//         });
+//       } finally {
+//         // ================= CLEANUP =================
+//         const paths = [filePath, thumbPath, clipPath];
+
+//         for (const p of paths) {
+//           if (p) {
+//             try {
+//               await fsPromises.unlink(p);
+//             } catch (err) {}
+//           }
+//         }
+//       }
+//     }
+
+//     return res.status(201).json({
+//       message: "Processing complete",
+//       files: uploadedFiles,
+//     });
+//   } catch (error) {
+//     console.error("Upload error:", error);
+//     return res.status(500).json({
+//       message: "Server error",
+//       error: error.message,
+//     });
+//   }
+// });
+
 router.post("/upload", upload.array("files"), async (req, res) => {
   try {
-    const { folderName, customerId, vendorId, phoneNo, isWeblink=true } = req.body;
+    const {
+      folderName,
+      customerId,
+      vendorId,
+      phoneNo,
+      isWeblink = true,
+      fileId,
+    } = req.body;
+
+    if (!fileId) {
+      return res.status(400).json({
+        message: "fileId is required",
+      });
+    }
 
     if (!folderName || !customerId) {
-      return res
-        .status(400)
-        .json({ message: "Folder Name and Customer ID are required." });
+      return res.status(400).json({
+        message: "Folder Name and Customer ID are required.",
+      });
     }
 
     const folder = await Folder.findOne({ folderName }).lean();
@@ -350,13 +751,16 @@ router.post("/upload", upload.array("files"), async (req, res) => {
     const mainFolderId = folder._id;
 
     if (!req.files || req.files.length === 0) {
-      return res.status(400).json({ message: "No files were uploaded." });
+      return res.status(400).json({
+        message: "No files were uploaded.",
+      });
     }
 
-    const folderPath = isWeblink ?
-      folderName : vendorId ?
-        `${folderName}_${customerId}_${vendorId}` :
-        `${folderName}_${customerId}`;
+    const folderPath = isWeblink
+      ? folderName
+      : vendorId
+        ? `${folderName}_${customerId}_${vendorId}`
+        : `${folderName}_${customerId}`;
 
     const uploadedFiles = [];
 
@@ -369,11 +773,80 @@ router.post("/upload", upload.array("files"), async (req, res) => {
 
       let thumbPath;
       let clipPath;
+      let finalUpdateData = {};
 
       try {
+        // ================= CHECK EXISTING =================
+
+        let existing = await WebLink.findOne({ fileId });
+
+        if (existing) {
+          if (existing.status === "done") {
+            return res.status(200).json({
+              message: "Already uploaded",
+              files: [existing],
+            });
+          }
+
+          if (existing.status === "uploading") {
+            return res.status(200).json({
+              message: "Already uploading",
+              files: [existing],
+            });
+          }
+
+          if (existing.status === "failed") {
+            await WebLink.updateOne(
+              { fileId },
+              {
+                status: "uploading",
+                $inc: { retryCount: 1 },
+              },
+            );
+          }
+        } else {
+          // ================= CREATE LOCK DOC =================
+
+          try {
+            await WebLink.create({
+              fileId,
+              orderId: vendorId ? vendorId.toString() : folderName,
+              orderById: customerId,
+              orderByName: phoneNo || "",
+              status: "uploading",
+              mainFolderId,
+              type: isVideo ? "video" : "image",
+
+              originalUrl: "pending",
+              originalKey: "pending",
+
+              thumbnailImageUrl: "pending",
+              thumbnailKey: "pending",
+
+              videoClipUrl: "pending",
+              videoClipKey: "pending",
+            });
+          } catch (err) {
+            // ================= RACE CONDITION =================
+
+            if (err.code === 11000) {
+              const doc = await WebLink.findOne({ fileId });
+
+              return res.status(200).json({
+                message: "Already processing",
+                files: [doc],
+              });
+            }
+
+            throw err;
+          }
+        }
+
         // ================= IMAGE =================
+
         if (isImage) {
           const thumbName = `thumb_${fileName}.webp`;
+
           thumbPath = path.join(TEMP_DIR, thumbName);
 
           await generateThumbnail(filePath, thumbPath);
@@ -383,7 +856,7 @@ router.post("/upload", upload.array("files"), async (req, res) => {
             fileName,
             folderPath,
             phoneNo,
-            file.mimetype
+            file.mimetype,
           );
 
           const thumbRes = await uploadFileToS3(
@@ -391,34 +864,24 @@ router.post("/upload", upload.array("files"), async (req, res) => {
             thumbName,
             folderPath,
             phoneNo,
-            "image/webp"
+            "image/webp",
           );
 
-          const saveDoc = await WebLink.create({
-            orderId: vendorId ? vendorId.toString() : folderName,
-            orderById: customerId,
-            orderByName: phoneNo || "",
+          finalUpdateData = {
             type: "image",
+
             originalUrl: originalRes.Location,
             originalKey: originalRes.Key,
+
             thumbnailImageUrl: thumbRes.Location,
             thumbnailKey: thumbRes.Key,
-            videoClipUrl: null,
-            videoClipKey: null,
-            mainFolderId,
-          });
-
-          uploadedFiles.push({
-            fileName: file.originalname,
-            imageUrl: originalRes.Location,
-            thumbnailUrl: thumbRes.Location,
-            imageId: saveDoc._id,
-          });
+          };
         }
 
         // ================= VIDEO =================
         else if (isVideo) {
           const clipName = `clip_${fileName}.mp4`;
+
           clipPath = path.join(TEMP_DIR, clipName);
 
           await generateVideoPreview(filePath, clipPath, 3);
@@ -428,7 +891,7 @@ router.post("/upload", upload.array("files"), async (req, res) => {
             fileName,
             folderPath,
             phoneNo,
-            file.mimetype
+            file.mimetype,
           );
 
           const clipRes = await uploadFileToS3(
@@ -436,44 +899,52 @@ router.post("/upload", upload.array("files"), async (req, res) => {
             clipName,
             folderPath,
             phoneNo,
-            "video/mp4"
+            "video/mp4",
           );
 
-          await WebLink.create({
-            orderId: vendorId ? vendorId.toString() : folderName,
-            orderById: customerId,
-            orderByName: phoneNo || "",
+          finalUpdateData = {
             type: "video",
+
             originalUrl: videoRes.Location,
             originalKey: videoRes.Key,
-            thumbnailImageUrl: null,
-            thumbnailKey: null,
+
             videoClipUrl: clipRes.Location,
             videoClipKey: clipRes.Key,
-            mainFolderId,
-          });
-
-          uploadedFiles.push({
-            fileName: file.originalname,
-            videoUrl: videoRes.Location,
-            clipUrl: clipRes.Location,
-          });
+          };
+        } else {
+          throw new Error("Unsupported file type");
         }
 
-        else {
-          uploadedFiles.push({
-            fileName: file.originalname,
-            error: "Unsupported file type",
-          });
-        }
+        // ================= UPDATE DONE =================
 
+        const updatedDoc = await WebLink.findOneAndUpdate(
+          { fileId },
+          {
+            ...finalUpdateData,
+            status: "done",
+          },
+          { new: true },
+        );
+
+        uploadedFiles.push(updatedDoc);
       } catch (error) {
-        console.error(`Error processing ${fileName}:`, error.message);
+        console.error(`Error processing ${fileName}:`, error);
+
+        // ================= UPDATE FAILED =================
+
+        await WebLink.findOneAndUpdate(
+          { fileId },
+          {
+            status: "failed",
+          },
+        );
+
         uploadedFiles.push({
           fileName: file.originalname,
           error: error.message,
         });
       } finally {
+        // ================= CLEANUP =================
 
         const paths = [filePath, thumbPath, clipPath];
 
@@ -482,23 +953,18 @@ router.post("/upload", upload.array("files"), async (req, res) => {
 
           try {
             await fsPromises.unlink(p);
-            console.log("Deleted:", p);
-          } catch (err) {
-            if (err.code !== "ENOENT") {
-              console.error("Delete failed:", p, err.message);
-            }
-          }
+          } catch {}
         }
       }
     }
 
     return res.status(201).json({
-      message: "Files uploaded successfully.",
+      message: "Processing complete",
       files: uploadedFiles,
     });
-
   } catch (error) {
     console.error("Upload error:", error);
+
     return res.status(500).json({
       message: "Server error",
       error: error.message,
@@ -615,7 +1081,3 @@ router.put(
 );
 
 module.exports = router;
-
-
-
-
