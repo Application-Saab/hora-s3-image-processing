@@ -12,7 +12,12 @@ const weblinkSchema = new mongoose.Schema(
       index: true,
       default: null,
     },
-
+    driveFileId: {
+      type: String,
+      unique: true,
+      required: true,
+      index: true
+    },
     orderId: {
       type: String, // changed from ObjectId
       ref: "order",
@@ -56,16 +61,15 @@ const weblinkSchema = new mongoose.Schema(
 
     originalUrl: {
       type: String,
-      required: true,
       trim: true,
     },
 
-   originalKey: {
-  type: String,
-  unique: true,
-  sparse: true, 
-  default: null
-},
+    originalKey: {
+      type: String,
+      unique: true,
+      sparse: true,
+      default: null
+    },
 
     thumbnailImageUrl: {
       type: String,
@@ -93,7 +97,7 @@ const weblinkSchema = new mongoose.Schema(
       index: true,
     },
     likedBy: {
-      type: [String], 
+      type: [String],
       default: [],
       index: true,
     }

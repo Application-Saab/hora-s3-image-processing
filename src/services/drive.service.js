@@ -10,7 +10,6 @@ const {
   generateVideoPreview,
 } = require("../utils/auth.util.js");
 const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
-const TEMP_DIR = path.join(process.cwd(), "tempUploads");
 
 
 
@@ -47,20 +46,20 @@ async function isFolderPubliclyAccessible(folderId, apiKey) {
 }
 async function downloadFile(url, dest) {
   const writer = fs.createWriteStream(dest);
-  try{
-  const response = await axios({
-    url,
-    method: "GET",
-    responseType: "stream",
-  });
-  response.data.pipe(writer);
-  return new Promise((resolve, reject) => {
-    writer.on("finish", resolve);
-    writer.on("error", reject);
-  });
-}catch(error){
-  console.log("ERROR DOWNLOADING DRIVE ................",error, "URL....... :", url, "DESTINATION .........", dest)
-}
+  try {
+    const response = await axios({
+      url,
+      method: "GET",
+      responseType: "stream",
+    });
+    response.data.pipe(writer);
+    return new Promise((resolve, reject) => {
+      writer.on("finish", resolve);
+      writer.on("error", reject);
+    });
+  } catch (error) {
+    console.log("ERROR DOWNLOADING DRIVE ................", error, "URL....... :", url, "DESTINATION .........", dest)
+  }
 }
 
 async function handleDriveFolderUpload(
@@ -101,8 +100,23 @@ async function handleDriveFolderUpload(
     let filePath, thumbnailPath, clipPath;
     try {
       const originalName = file.name;
-      const fileName = `${Date.now()}_${originalName}`;
+      const driveFileId = file.id;
+      const ext = path.extname(originalName) || "";
+      const fileName = `${driveFileId}${ext}`;
       filePath = path.join(tempDir, fileName);
+
+
+      const existing = await WebLink.findOne({
+        driveFileId,
+        orderId: orderId.toString()
+      });
+
+      console.log("DRIVE FILE ID =====", driveFileId);
+
+      if (existing) {
+        console.log(`⏩ SKIPPED (ALREADY EXISTS): ${file.id}`);
+        return { skipped: true, fileName: file.name };
+      }
 
 
       const downloadUrl = `https://drive.google.com/uc?export=download&id=${file.id}`;
@@ -118,10 +132,7 @@ async function handleDriveFolderUpload(
       // ================= IMAGE =================
       if (isImage) {
         try {
-          thumbnailPath = path.join(
-            tempDir,
-            `thumb_${fileName.replace(/\.(png|jpeg|jpg)$/i, "")}.webp`
-          );
+          thumbnailPath = path.join(tempDir, `thumb_${driveFileId}.webp`);
 
           const uploadOriginal = uploadFileToS3(
             filePath,
@@ -129,16 +140,13 @@ async function handleDriveFolderUpload(
             folderPath,
             phoneNo
           );
-console.log("STEP 3 GENERATE THUMB START", file.name)
+          console.log("STEP 3 GENERATE THUMB START", file.name)
 
           await generateThumbnail(filePath, thumbnailPath);
-console.log("STEP 4 THUMB COMPLETE", file.name)
+          console.log("STEP 4 THUMB COMPLETE", file.name)
 
-          const thumbFileName = `thumb_${fileName.replace(
-            /\.(png|jpeg|jpg)$/i,
-            ""
-          )}.webp`;
-console.log("STEP 5 S3 UPLOAD START", file.name)
+          const thumbFileName = `thumb_${driveFileId}.webp`;
+          console.log("STEP 5 S3 UPLOAD START", file.name)
 
           const uploadThumb = uploadFileToS3(
             thumbnailPath,
@@ -152,34 +160,45 @@ console.log("STEP 5 S3 UPLOAD START", file.name)
             uploadThumb,
           ]);
 
-console.log("STEP 6 S3 UPLOAD COMPLETE", file.name)
+          console.log("STEP 6 S3 UPLOAD COMPLETE", file.name)
 
           console.log("STEP 7 DB INSERT START", file.name)
 
           try {
-            await WebLink.create({
-              orderId: orderId.toString(),
-              orderById: customerId,
-              orderByName,
-              type: "image",
+            const result = await WebLink.updateOne(
+              { driveFileId },
+              {
+                $set: {
+                  driveFileId,
+                  orderId: orderId.toString(),
+                  orderById: customerId,
+                  orderByName,
+                  type: "image",
 
-              originalUrl: original.Location,
-              originalKey: original.Key,
+                  originalUrl: original?.Location,
+                  originalKey: original?.Key,
 
-              thumbnailImageUrl: thumb.Location,
-              thumbnailKey: thumb.Key,
+                  thumbnailImageUrl: thumb?.Location || null,
+                  thumbnailKey: thumb?.Key || null,
 
-              videoClipUrl: null,
-              videoClipKey: null,
-              mainFolderId,
+                  videoClipUrl: null,
+                  videoClipKey: null,
 
-            });
+                  mainFolderId,
+                }
+              },
+              { upsert: true, new: true, rawResult: true }
+            );
+            if (result.upsertedCount > 0 || result.modifiedCount > 0) {
+              successCount++;
+            }
+            console.log("INSERTED DOC =====", result);
           }
           catch (error) {
             console.log('create documnet error ------- image -------', error);
           }
           console.log("STEP 8 DB INSERT DONE", file.name)
-          successCount++;
+
           return { type: "image", fileName: originalName };
         }
         catch (error) {
@@ -190,7 +209,7 @@ console.log("STEP 6 S3 UPLOAD COMPLETE", file.name)
 
       // ================= VIDEO =================
       if (isVideo) {
-        clipPath = path.join(tempDir, `clip_${fileName}.mp4`);
+        clipPath = path.join(tempDir, `clip_${driveFileId}.mp4`);
 
         try {
           console.log("STEP 3 GENERATE PREVIEW CLIP START", file.name)
@@ -217,34 +236,45 @@ console.log("STEP 6 S3 UPLOAD COMPLETE", file.name)
             phoneNo,
             "video/mp4"
           );
-console.log("STEP 6 VIDEO S3 UPLOAD COMPLETE", file.name)
-console.log("STEP 7 VIDEO DB INSERT START", file.name)
+          console.log("STEP 6 VIDEO S3 UPLOAD COMPLETE", file.name)
+          console.log("STEP 7 VIDEO DB INSERT START", file.name)
 
           const [video, clip] = await Promise.all([uploadVideo, uploadClip]);
           try {
-            await WebLink.create({
-              orderId: orderId.toString(),
-              orderById: customerId,
-              orderByName,
-              type: "video",
 
-              originalUrl: video.Location,
-              originalKey: video.Key,
+            const result = await WebLink.updateOne(
+              { driveFileId },
+              {
+                $set: {
+                  driveFileId,
+                  orderId: orderId.toString(),
+                  orderById: customerId,
+                  orderByName,
+                  type: "video",
 
-              thumbnailImageUrl: null,
-              thumbnailKey: null,
+                  originalUrl: video?.Location,
+                  originalKey: video?.Key,
 
-              videoClipUrl: clip.Location,
-              videoClipKey: clip.Key,
-              mainFolderId
+                  thumbnailImageUrl: null,
+                  thumbnailKey: null,
 
-            });
+                  videoClipUrl: clip?.Location || null,
+                  videoClipKey: clip?.Key || null,
+
+                  mainFolderId,
+                }
+              },
+              { upsert: true, new: true, rawResult: true }
+            );
+            if (result.upsertedCount > 0 || result.modifiedCount > 0) {
+              successCount++;
+            }
           }
           catch (error) {
             console.log('create documnet error ------- video -------', error);
           }
           console.log("STEP 8 VIDEO DB INSERT DONE", file.name)
-          successCount++;
+
           return { type: "video", fileName: originalName };
         }
         catch (error) {
@@ -252,31 +282,31 @@ console.log("STEP 7 VIDEO DB INSERT START", file.name)
           console.log('video upload error', error); return { type: "video", fileName: originalName, error: error.message };
         }
       }
-    } 
+    }
     // catch (err) {
     //   console.error(`Error processing ------------ ${file?.name}:`, err.message);
     //   failCount++;
     //   return { fileName: file?.name, error: err.message };
     // } 
     catch (err) {
-  console.error(`Error processing ------------------- ${file?.name}: 
+      console.error(`Error processing ------------------- ${file?.name}: 
     failedFiles ARRAY  : ${failedFiles}
     `, err.message);
-  console.log(`Retry Count: ${retryCount}`);
+      console.log(`Retry Count: ${retryCount}`);
 
-  if (retryCount < 2) {
-    console.log(`--------------- RETRY START  ${file?.name} | Attempt ${retryCount + 2} | failedFiles ARRAY  : ${failedFiles}`);
-    return processFile(file, retryCount + 1);
-  } else {
-    console.log(`Max retries reached for ${file?.name}`);
-    failedFiles.push({
-      fileName: file?.name,
-      error: err.message
-    });
-    failCount++;
-    return { fileName: file?.name, error: err.message };
-  }
-}
+      if (retryCount < 2) {
+        console.log(`--------------- RETRY START  ${file?.name} | Attempt ${retryCount + 2} | failedFiles ARRAY  : ${failedFiles}`);
+        return processFile(file, retryCount + 1);
+      } else {
+        console.log(`Max retries reached for ${file?.name}`);
+        failedFiles.push({
+          fileName: file?.name,
+          error: err.message
+        });
+        failCount++;
+        return { fileName: file?.name, error: err.message };
+      }
+    }
     finally {
       [filePath, thumbnailPath, clipPath].forEach((p) => {
         if (p && fs.existsSync(p)) {
@@ -302,11 +332,11 @@ console.log("STEP 7 VIDEO DB INSERT START", file.name)
   async function getNextBatch() {
     if (finished) return [];
 
-       batchNumber++;   
+    batchNumber++;
 
-       console.log(`\n==============================`);
-       console.log(`📦 FETCHING BATCH ${batchNumber}`);
-       console.log(`==============================`);
+    console.log(`\n==============================`);
+    console.log(`📦 FETCHING BATCH ${batchNumber}`);
+    console.log(`==============================`);
     let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1`;
 
     if (pageToken) listUrl += `&pageToken=${pageToken}`;
@@ -324,8 +354,8 @@ console.log("STEP 7 VIDEO DB INSERT START", file.name)
     if (!pageToken) finished = true;
 
     return files.map(file => ({
-     ...file,
-     batch: batchNumber
+      ...file,
+      batch: batchNumber
     }));
   }
 
@@ -337,9 +367,9 @@ console.log("STEP 7 VIDEO DB INSERT START", file.name)
 
       while (queue.length > 0 && activeCount < MAX_CONCURRENT) {
         const file = queue.shift();
-console.log(
-  `🚀 START PROCESSING: ${file.name} | Batch: ${file.batch}`
-);        activeCount++;
+        console.log(
+          `🚀 START PROCESSING: ${file.name} | Batch: ${file.batch}`
+        ); activeCount++;
 
         processFile(file)
           .then(result => results.push(result))
@@ -348,14 +378,14 @@ console.log(
 
             activeCount--;
             console.log(
-  `✅ DONE: ${file.name} | Batch: ${file.batch} | Active: ${activeCount}`
-);
+              `✅ DONE: ${file.name} | Batch: ${file.batch} | Active: ${activeCount}`
+            );
 
           });
       }
 
       if (queue.length === 0 && !finished) {
-          console.log("QUEUE EMPTY, FETCHING NEXT BATCH FORM DRIVE ---------------...........");
+        console.log("QUEUE EMPTY, FETCHING NEXT BATCH FORM DRIVE ---------------...........");
         queue = await getNextBatch();
       }
       // if (queue.length < MAX_CONCURRENT && !finished) {
@@ -366,10 +396,10 @@ console.log(
       await new Promise(resolve => setImmediate(resolve));
     }
 
-if (finished && activeCount === 0) {
-  console.log(`\n🎉 ALL BATCHES COMPLETED`);
-  console.log(`Total Batches: ${batchNumber}`);
-}
+    if (finished && activeCount === 0) {
+      console.log(`\n🎉 ALL BATCHES COMPLETED`);
+      console.log(`Total Batches: ${batchNumber}`);
+    }
 
     return results;
   }
@@ -384,16 +414,16 @@ if (finished && activeCount === 0) {
   console.log("uploadedFiles -----------", results);
   console.log("Upload completed for orderId:", orderId);
 
-await OrderModel.findOneAndUpdate(
-  { order_id: orderId },
-  {
+  await OrderModel.findOneAndUpdate(
+    { order_id: orderId },
+    {
       $set: {
-      "imageUploadCounts.totalFromDrive": totalFromDrive,
-      "imageUploadCounts.totalWeblink": successCount,
-      "imageUploadCounts.AllImagesUploadedAt": new Date()
+        "imageUploadCounts.totalFromDrive": totalFromDrive,
+        "imageUploadCounts.totalWeblink": successCount,
+        "imageUploadCounts.AllImagesUploadedAt": new Date()
+      }
     }
-  }
-);
+  );
 
   return results;
   // await new Promise(resolve => setImmediate(resolve));
