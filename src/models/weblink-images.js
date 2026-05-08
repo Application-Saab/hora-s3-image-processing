@@ -14,8 +14,6 @@ const weblinkSchema = new mongoose.Schema(
     },
     driveFileId: {
       type: String,
-      unique: true,
-      required: true,
       index: true
     },
     orderId: {
@@ -43,7 +41,6 @@ const weblinkSchema = new mongoose.Schema(
 
     orderById: {
       type: String,
-      required: true,
       trim: true,
       index: true,
     },
@@ -55,7 +52,8 @@ const weblinkSchema = new mongoose.Schema(
     type: {
       type: String,
       enum: ["image", "video"],
-      required: true,
+      default: null,
+
       index: true,
     },
 
@@ -107,5 +105,12 @@ const weblinkSchema = new mongoose.Schema(
     versionKey: false,
   }
 );
+
+
+weblinkSchema.index(
+  { driveFileId: 1, orderId: 1 },
+  { unique: true }
+);
+
 
 module.exports = mongoose.model("weblinks", weblinkSchema);

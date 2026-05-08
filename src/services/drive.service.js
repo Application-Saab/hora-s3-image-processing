@@ -75,7 +75,6 @@ async function handleDriveFolderUpload(
   let failedFiles = [];
 
   let totalFromDrive = 0;
-  let successCount = 0;
   let failCount = 0;
 
   console.log("mainFolderId in the handler", mainFolderId)
@@ -105,17 +104,79 @@ async function handleDriveFolderUpload(
       const fileName = `${driveFileId}${ext}`;
       filePath = path.join(tempDir, fileName);
 
-
-      const existing = await WebLink.findOne({
+      const existingFile = await WebLink.findOne({
         driveFileId,
         orderId: orderId.toString()
       });
 
-      console.log("DRIVE FILE ID =====", driveFileId);
 
-      if (existing) {
-        console.log(`⏩ SKIPPED (ALREADY EXISTS): ${file.id}`);
-        return { skipped: true, fileName: file.name };
+      // already uploaded
+      if (existingFile?.status === "done") {
+
+        console.log(`⏩ FILE ALREADY DONE: ${file.id}`);
+
+        return {
+          skipped: true,
+          fileName: file.name
+        };
+      }
+
+
+      // already processing
+      if (existingFile?.status === "uploading") {
+
+        console.log(`⏩ FILE ALREADY PROCESSING: ${file.id}`);
+
+        return {
+          skipped: true,
+          fileName: file.name
+        };
+      }
+
+
+      // retry failed file
+      // retry failed file
+      if (existingFile?.status === "failed") {
+
+        console.log(`🔄 RETRYING FAILED FILE: ${file.id}`);
+
+        await WebLink.updateOne(
+          {
+            driveFileId,
+            orderId: orderId.toString()
+          },
+          {
+            $set: {
+              status: "uploading"
+            }
+          }
+        );
+      }
+      else {
+
+        // new file
+        await WebLink.findOneAndUpdate(
+  {
+    driveFileId,
+    orderId: orderId.toString()
+  },
+  {
+    $setOnInsert: {
+      driveFileId,
+      orderId: orderId.toString(),
+      mainFolderId,
+      status: "uploading",
+      retryCount: 0,
+      
+    }
+  },
+  {
+    upsert: true,
+    new: true
+  }
+);
+
+        console.log(`PLACEHOLDER CREATED: ${driveFileId}`);
       }
 
 
@@ -166,13 +227,18 @@ async function handleDriveFolderUpload(
 
           try {
             const result = await WebLink.updateOne(
-              { driveFileId },
+              {
+                driveFileId,
+                orderId: orderId.toString()
+              },
               {
                 $set: {
                   driveFileId,
                   orderId: orderId.toString(),
+
                   orderById: customerId,
                   orderByName,
+
                   type: "image",
 
                   originalUrl: original?.Location,
@@ -185,25 +251,26 @@ async function handleDriveFolderUpload(
                   videoClipKey: null,
 
                   mainFolderId,
+
+                  status: "done",
                 }
               },
-              { upsert: true, new: true, rawResult: true }
+              { upsert: false, new: true, rawResult: true }
             );
-            if (result.upsertedCount > 0 || result.modifiedCount > 0) {
-              successCount++;
-            }
+
             console.log("INSERTED DOC =====", result);
-          }
-          catch (error) {
+
+          } catch (error) {
             console.log('create documnet error ------- image -------', error);
+            throw error;
           }
           console.log("STEP 8 DB INSERT DONE", file.name)
 
           return { type: "image", fileName: originalName };
         }
         catch (error) {
-          failCount++;
-          console.log('image upload error', error); return { type: "image", fileName: originalName, error: error.message };
+          console.log('image upload error', error);
+          throw error;
         }
       }
 
@@ -243,13 +310,18 @@ async function handleDriveFolderUpload(
           try {
 
             const result = await WebLink.updateOne(
-              { driveFileId },
+              {
+                driveFileId,
+                orderId: orderId.toString()
+              },
               {
                 $set: {
                   driveFileId,
                   orderId: orderId.toString(),
+
                   orderById: customerId,
                   orderByName,
+
                   type: "video",
 
                   originalUrl: video?.Location,
@@ -262,24 +334,24 @@ async function handleDriveFolderUpload(
                   videoClipKey: clip?.Key || null,
 
                   mainFolderId,
+
+                  status: "done",
                 }
               },
-              { upsert: true, new: true, rawResult: true }
+              { upsert: false, new: true, rawResult: true }
             );
-            if (result.upsertedCount > 0 || result.modifiedCount > 0) {
-              successCount++;
-            }
-          }
-          catch (error) {
+
+
+          } catch (error) {
             console.log('create documnet error ------- video -------', error);
+            throw error;
           }
           console.log("STEP 8 VIDEO DB INSERT DONE", file.name)
 
           return { type: "video", fileName: originalName };
         }
         catch (error) {
-          failCount++;
-          console.log('video upload error', error); return { type: "video", fileName: originalName, error: error.message };
+          console.log('video upload error', error); throw error;
         }
       }
     }
@@ -293,6 +365,23 @@ async function handleDriveFolderUpload(
     failedFiles ARRAY  : ${failedFiles}
     `, err.message);
       console.log(`Retry Count: ${retryCount}`);
+
+
+      await WebLink.updateOne(
+        {
+          driveFileId: file?.id,
+          orderId: orderId.toString(),
+          mainFolderId
+        },
+        {
+          $set: {
+            status: "failed"
+          },
+          $inc: {
+            retryCount: 1
+          }
+        }
+      );
 
       if (retryCount < 2) {
         console.log(`--------------- RETRY START  ${file?.name} | Attempt ${retryCount + 2} | failedFiles ARRAY  : ${failedFiles}`);
@@ -405,9 +494,17 @@ async function handleDriveFolderUpload(
   }
 
   const results = await startProcessing();
+
+
+  const finalSuccessCount = await WebLink.countDocuments({
+  orderId: orderId.toString(),
+  mainFolderId,
+  status: "done"
+});
+
   console.log("===== FINAL REPORT =====");
   console.log("Total from Drive:", totalFromDrive);
-  console.log("Successfully Uploaded:", successCount);
+  console.log("Successfully Uploaded:", finalSuccessCount);
   console.log("Failed:", failCount);
   console.log("========================");
   // const uploadedFiles = await Promise.all(uploadPromises);
@@ -419,7 +516,7 @@ async function handleDriveFolderUpload(
     {
       $set: {
         "imageUploadCounts.totalFromDrive": totalFromDrive,
-        "imageUploadCounts.totalWeblink": successCount,
+        "imageUploadCounts.totalWeblink": finalSuccessCount,
         "imageUploadCounts.AllImagesUploadedAt": new Date()
       }
     }
