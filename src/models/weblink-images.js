@@ -10,7 +10,7 @@ const weblinkSchema = new mongoose.Schema(
       type: String,
       trim: true,
       index: true,
-      default: null,
+      default: "",
     },
     driveFileId: {
       type: String,
@@ -27,7 +27,6 @@ const weblinkSchema = new mongoose.Schema(
     fileId: {
       type: String,
       unique: true,
-      sparse: true,
     },
     status: {
       type: String,
@@ -52,7 +51,7 @@ const weblinkSchema = new mongoose.Schema(
     type: {
       type: String,
       enum: ["image", "video"],
-      default: null,
+      default: "",
 
       index: true,
     },
@@ -64,9 +63,7 @@ const weblinkSchema = new mongoose.Schema(
 
     originalKey: {
       type: String,
-      unique: true,
-      sparse: true,
-      default: null
+      default: ""
     },
 
     thumbnailImageUrl: {
