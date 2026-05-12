@@ -95,7 +95,9 @@ const weblinkSchema = new mongoose.Schema(
       type: [String],
       default: [],
       index: true,
-    }
+    },
+    downloadCount: { type: Number, default: 0 },
+    shareCount: { type: Number, default: 0 },
   },
   {
     timestamps: true,
