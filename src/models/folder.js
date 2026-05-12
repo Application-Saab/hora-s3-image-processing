@@ -1,32 +1,3 @@
-// const mongoose = require('mongoose');
-
-// // Define the schema
-// const FolderSchema = new mongoose.Schema({
-//   folderName: {
-//     type: String,
-//     required: true,
-//     trim: true,
-//   },
-//   customerId: {
-//     type: String,
-//     required: true,
-//     unique: true, // Ensures that the custom ID is unique
-//   },
-//   vendorId: {
-//     type: String
-//   },
-//   createdAt: {
-//     type: Date,
-//     default: Date.now, // Automatically adds a creation timestamp
-//   },
-// });
-
-// // Create the model
-// const Folder = mongoose.model('Folder', FolderSchema);
-
-// module.exports = Folder;
-
-
 const mongoose = require("mongoose");
 
 const FolderSchema = new mongoose.Schema(
@@ -39,6 +10,15 @@ const FolderSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+    },
+      viewedBy: {
+      type: [String], // userIds
+      default: [],
+      index: true
+    },
+    clickCount: {
+      type: Number,
+      default: 0
     },
     customerId: {
       type: String,
@@ -81,8 +61,8 @@ const FolderSchema = new mongoose.Schema(
           index: true,
         },
         folderDp: {
-  fileUrl: { type: String },
-  thumbnailUrl: { type: String },
+  fileUrl: { type: String, required: true },
+  thumbnailUrl: { type: String, required: true },
   s3Key: { type: String },
   thumbnailKey: { type: String }
 },
