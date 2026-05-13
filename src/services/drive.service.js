@@ -59,6 +59,7 @@ async function downloadFile(url, dest) {
     });
   } catch (error) {
     console.log("ERROR DOWNLOADING DRIVE ................", error, "URL....... :", url, "DESTINATION .........", dest)
+    throw error;
   }
 }
 
