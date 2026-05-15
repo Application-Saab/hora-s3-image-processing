@@ -81,6 +81,34 @@ const uploadFileToS3Wonderland = async ({
   return s3.upload(params).promise();
 };
 
+
+
+//delete with retry
+const deleteFileWithRetry = async (filePath, retries = 3, delay = 100) => {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await fs.unlinkSync(filePath);
+      console.log(`Successfully deleted file: ${filePath}`);
+      return;
+    } catch (err) {
+      console.error(
+        `Attempt ${attempt} to delete file ${filePath} failed:`,
+        err.message,
+      );
+      if (attempt === retries) {
+        console.error(
+          `Failed to delete file ${filePath} after ${retries} attempts`,
+        );
+        return; // Don't throw error to avoid interrupting the response
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+};
+
+
+
+
 // =======================
 // Generate Thumbnail
 // =======================
@@ -109,6 +137,7 @@ const generateThumbnail = async (inputPath, outputPath) => {
     );
   } catch (error) {
     console.error("Error generating thumbnail:", error);
+    throw error;
   }
 };
 
@@ -190,4 +219,5 @@ module.exports = {
   generateVideoPreview,
   upload,
   TEMP_DIR,
+  deleteFileWithRetry,
 };
