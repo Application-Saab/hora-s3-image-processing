@@ -8,6 +8,7 @@ const {
   generateThumbnail,
   uploadFileToS3,
   generateVideoPreview,
+  deleteFileWithRetry,
 } = require("../utils/auth.util.js");
 const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
 
@@ -353,6 +354,7 @@ async function handleDriveFolderUpload(
         }
         catch (error) {
           console.log('video upload error', error); throw error;
+          throw error;
         }
       }
     }
@@ -398,11 +400,13 @@ async function handleDriveFolderUpload(
       }
     }
     finally {
+      
       [filePath, thumbnailPath, clipPath].forEach((p) => {
         if (p && fs.existsSync(p)) {
+          
           try {
             console.log("DLETE START ------------")
-            fs.unlinkSync(p);
+            deleteFileWithRetry(p)
             console.log("DELETE SUCCESSFULLY ---------", p)
           }
           catch (error) {
