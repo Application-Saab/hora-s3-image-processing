@@ -64,6 +64,33 @@ async function downloadFile(url, dest) {
   }
 }
 
+async function getTotalDriveFiles(folderId) {
+  let pageToken = null;
+  let total = 0;
+
+  do {
+    let url = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id)&pageSize=1000`;
+
+    if (pageToken) {
+      url += `&pageToken=${pageToken}`;
+    }
+
+    const res = await axios.get(url);
+
+    const files = res.data.files || [];
+
+    total += files.length;
+
+    console.log("COUNT BATCH:", files.length);
+    console.log("TOTAL COUNT:", total);
+
+    pageToken = res.data.nextPageToken;
+
+  } while (pageToken);
+
+  return total;
+}
+
 async function handleDriveFolderUpload(
   folderUrl,
   vendorId,
@@ -76,7 +103,6 @@ async function handleDriveFolderUpload(
   //retry file arrray
   let failedFiles = [];
 
-  let totalFromDrive = 0;
   let failCount = 0;
 
   console.log("mainFolderId in the handler", mainFolderId)
@@ -94,6 +120,19 @@ async function handleDriveFolderUpload(
 
   const tempDir = path.join(__dirname, "tempUploads");
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+
+  let totalDriveFiles = await getTotalDriveFiles(folderId);
+
+console.log("TOTAL FILES IN DRIVE =====", totalDriveFiles);
+
+await OrderModel.findOneAndUpdate(
+  { order_id: orderId },
+  {
+    $set: {
+      "imageUploadCounts.totalFromDrive": totalDriveFiles
+    }
+  }
+);
 
 
   const folderPath = folderName;
@@ -400,20 +439,18 @@ async function handleDriveFolderUpload(
       }
     }
     finally {
-      
-      [filePath, thumbnailPath, clipPath].forEach((p) => {
+      for (const p of [filePath, thumbnailPath, clipPath]) { 
         if (p && fs.existsSync(p)) {
-          
           try {
             console.log("DLETE START ------------")
-            deleteFileWithRetry(p)
+            await deleteFileWithRetry(p)
             console.log("DELETE SUCCESSFULLY ---------", p)
           }
           catch (error) {
             console.log('error deletng images ------catch ----', error, "filePath", filePath);
           }
         }
-      });
+      };
     }
   }
 
@@ -431,13 +468,12 @@ async function handleDriveFolderUpload(
     console.log(`\n==============================`);
     console.log(`📦 FETCHING BATCH ${batchNumber}`);
     console.log(`==============================`);
-    let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1`;
+    let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=100`;
 
     if (pageToken) listUrl += `&pageToken=${pageToken}`;
 
     const res = await axios.get(listUrl);
     const files = res.data.files || [];
-    totalFromDrive += files.length;
 
     console.log(`📦 Batch ${batchNumber} fetched files:`, files.length);
 
@@ -500,7 +536,6 @@ async function handleDriveFolderUpload(
 
   const results = await startProcessing();
 
-
   const finalSuccessCount = await WebLink.countDocuments({
   orderId: orderId.toString(),
   mainFolderId,
@@ -508,7 +543,7 @@ async function handleDriveFolderUpload(
 });
 
   console.log("===== FINAL REPORT =====");
-  console.log("Total from Drive:", totalFromDrive);
+  console.log("Total from Drive:", totalDriveFiles);
   console.log("Successfully Uploaded:", finalSuccessCount);
   console.log("Failed:", failCount);
   console.log("========================");
@@ -520,7 +555,6 @@ async function handleDriveFolderUpload(
     { order_id: orderId },
     {
       $set: {
-        "imageUploadCounts.totalFromDrive": totalFromDrive,
         "imageUploadCounts.totalWeblink": finalSuccessCount,
         "imageUploadCounts.AllImagesUploadedAt": new Date()
       }
