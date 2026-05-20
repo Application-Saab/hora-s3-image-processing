@@ -468,11 +468,18 @@ await OrderModel.findOneAndUpdate(
     console.log(`\n==============================`);
     console.log(`📦 FETCHING BATCH ${batchNumber}`);
     console.log(`==============================`);
-    let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=100`;
+    let listUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000`;
 
     if (pageToken) listUrl += `&pageToken=${pageToken}`;
+const startTime = Date.now();
 
     const res = await axios.get(listUrl);
+const endTime = Date.now();
+
+console.log(
+  `METADATA FETCH TIME: ${(endTime - startTime) / 1000} sec`
+);
+
     const files = res.data.files || [];
 
     console.log(`📦 Batch ${batchNumber} fetched files:`, files.length);
