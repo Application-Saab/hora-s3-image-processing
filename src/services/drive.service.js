@@ -459,6 +459,8 @@ await OrderModel.findOneAndUpdate(
   let pageToken = null;
   let finished = false;
   let batchNumber = 0;
+  let fetchedFilesCount = 0;
+  let fetchedFileIds = new Set();
 
   async function getNextBatch() {
     if (finished) return [];
@@ -481,6 +483,18 @@ console.log(
 );
 
     const files = res.data.files || [];
+
+   files.forEach(file => {
+  fetchedFileIds.add(file.id);
+});
+
+fetchedFilesCount = fetchedFileIds.size;
+
+console.log("FETCHED FILES COUNT =====", fetchedFilesCount);
+console.log(
+  "REMAINING =====",
+  totalDriveFiles - fetchedFilesCount
+);
 
     console.log(`📦 Batch ${batchNumber} fetched files:`, files.length);
 
@@ -534,9 +548,40 @@ console.log(
     }
 
     if (finished && activeCount === 0) {
-      console.log(`\n🎉 ALL BATCHES COMPLETED`);
-      console.log(`Total Batches: ${batchNumber}`);
+  console.log(`\n🎉 ALL BATCHES COMPLETED`);
+  console.log(`Total Batches: ${batchNumber}`);
+
+  let retryFetchCount = 0;
+
+  while ( fetchedFilesCount < totalDriveFiles ) {
+
+    console.log("\n⚠️ FILE COUNT MISMATCH");
+    console.log("TOTAL DRIVE FILES:", totalDriveFiles);
+    console.log("FETCHED:", fetchedFilesCount);
+
+    console.log(
+      `🔄 RETRYING MISSING FILE FETCH | Attempt ${
+        retryFetchCount + 1
+      }`
+    );
+
+    // IMPORTANT
+    pageToken = null;
+    finished = false;
+
+    const retryBatch = await getNextBatch();
+
+    if (retryBatch.length === 0) {
+      console.log("❌ RETRY BATCH EMPTY");
+      retryFetchCount++;
+      continue;
     }
+
+    queue.push(...retryBatch);
+
+    retryFetchCount++;
+  }
+}
 
     return results;
   }
