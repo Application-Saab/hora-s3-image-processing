@@ -113,6 +113,9 @@ const deleteFileWithRetry = async (filePath, retries = 3, delay = 100) => {
 // Generate Thumbnail
 // =======================
 const generateThumbnail = async (inputPath, outputPath) => {
+  if (inputPath && fs.existsSync(inputPath)){
+    console.log("inputPath =====", inputPath, "EXISTS OR NOT ", fs.existsSync(inputPath))
+  }
   try {
     // Resize + compress
     const outputBuffer = await sharp(inputPath)
@@ -207,6 +210,7 @@ const generateVideoPreview = (
 
         console.log(`❌ Failed after ${timeTaken} seconds Error : ${err}`);
         reject(err);
+        throw err;
       })
       .save(outputPath);
   });

@@ -91,6 +91,38 @@ async function getTotalDriveFiles(folderId) {
   return total;
 }
 
+let driveCountQueue = Promise.resolve();
+
+
+  async function getDriveCountSequentially(folderId, orderId) {
+
+  return new Promise((resolve, reject) => {
+
+    driveCountQueue = driveCountQueue
+      .catch(() => {})
+      .then(async () => {
+
+        console.log("STARTING COUNT FOR:", folderId, "ORDER ID", orderId);
+
+        const startTime = Date.now();
+
+        const count = await getTotalDriveFiles(folderId);
+
+        const endTime = Date.now();
+
+        console.log("COUNT FINISHED FOR:",folderId,"ORDER ID:",orderId,"TOTAL TIME:",`${((endTime - startTime) / 1000).toFixed(2)} sec`);
+
+        console.log("COUNT FINISHED FOR:", folderId, "ORDER ID", orderId);
+
+        resolve(count);
+
+      })
+      .catch(reject);
+
+  });
+
+}
+
 async function handleDriveFolderUpload(
   folderUrl,
   vendorId,
@@ -106,6 +138,7 @@ async function handleDriveFolderUpload(
   let failCount = 0;
 
   console.log("mainFolderId in the handler", mainFolderId)
+  console.log("START PROCESSING FIRST ONE FOR THIS ORDER II ------------>>>>>>>>>>", orderId);
   const folderId = getFolderIdFromUrl(folderUrl);
   if (!folderId) throw new Error("Invalid Google Drive folder URL");
   if (!apiKey) throw new Error("Google Drive API key not configured");
@@ -121,7 +154,9 @@ async function handleDriveFolderUpload(
   const tempDir = path.join(__dirname, "tempUploads");
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
-  let totalDriveFiles = await getTotalDriveFiles(folderId);
+
+const totalDriveFiles = await getDriveCountSequentially(folderId, orderId);
+
 
 console.log("TOTAL FILES IN DRIVE =====", totalDriveFiles);
 
@@ -307,6 +342,17 @@ await OrderModel.findOneAndUpdate(
           }
           console.log("STEP 8 DB INSERT DONE", file.name)
 
+
+          if (filePath && fs.existsSync(filePath)) {
+  console.log("DELETE ORIGINAL IMAGE START");
+  await deleteFileWithRetry(filePath);
+}
+
+if (thumbnailPath && fs.existsSync(thumbnailPath)) {
+  console.log("DELETE THUMB START");
+  await deleteFileWithRetry(thumbnailPath);
+}
+
           return { type: "image", fileName: originalName };
         }
         catch (error) {
@@ -329,7 +375,7 @@ await OrderModel.findOneAndUpdate(
           console.log("STEP 5 VIDEO S3 UPLOAD VIDEO START", file.name)
 
 
-          const uploadVideo = uploadFileToS3(
+          const uploadVideo =  uploadFileToS3(
             filePath,
             fileName,
             folderPath,
@@ -337,7 +383,7 @@ await OrderModel.findOneAndUpdate(
             file.mimeType
           );
 
-          const uploadClip = uploadFileToS3(
+          const uploadClip =  uploadFileToS3(
             clipPath,
             path.basename(clipPath),
             folderPath,
@@ -389,11 +435,21 @@ await OrderModel.findOneAndUpdate(
           }
           console.log("STEP 8 VIDEO DB INSERT DONE", file.name)
 
+
+          if (filePath && fs.existsSync(filePath)) {
+  console.log("DELETE VIDEO START");
+  await deleteFileWithRetry(filePath);
+}
+
+if (clipPath && fs.existsSync(clipPath)) {
+  console.log("DELETE CLIP START");
+  await deleteFileWithRetry(clipPath);
+}
+
           return { type: "video", fileName: originalName };
         }
         catch (error) {
           console.log('video upload error', error); throw error;
-          throw error;
         }
       }
     }
@@ -438,20 +494,6 @@ await OrderModel.findOneAndUpdate(
         return { fileName: file?.name, error: err.message };
       }
     }
-    finally {
-      for (const p of [filePath, thumbnailPath, clipPath]) { 
-        if (p && fs.existsSync(p)) {
-          try {
-            console.log("DLETE START ------------")
-            await deleteFileWithRetry(p)
-            console.log("DELETE SUCCESSFULLY ---------", p)
-          }
-          catch (error) {
-            console.log('error deletng images ------catch ----', error, "filePath", filePath);
-          }
-        }
-      };
-    }
   }
 
   const MAX_CONCURRENT = 1;
@@ -492,7 +534,7 @@ await OrderModel.findOneAndUpdate(
   async function startProcessing() {
     let queue = await getNextBatch();
     const results = [];
-
+    console.log("START PROCESSING OF ACTUAL IMAGE S3 UPLOAD DOWNLOAD ETC------>>>>>>>>>")
     while (queue.length > 0 || !finished || activeCount > 0) {
 
       while (queue.length > 0 && activeCount < MAX_CONCURRENT) {
