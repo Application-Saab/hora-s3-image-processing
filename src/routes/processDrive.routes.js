@@ -96,6 +96,7 @@ router.post("/create-subfolder", uploadSingel.single("file"), async (req, res) =
       customerId,
       vendorId,
       phoneNo,
+      isLocker = false,
     } = req.body;
 
     if (!folderName || !type || !userId) {
@@ -142,6 +143,7 @@ router.post("/create-subfolder", uploadSingel.single("file"), async (req, res) =
       type,
       userId: type === "my_photos" ? userId : folder.customerId,
       folderDp,
+      isLocker: isLocker === "true" || isLocker === true,
     };
 
     folder.subFolders.push(newSubFolder);
