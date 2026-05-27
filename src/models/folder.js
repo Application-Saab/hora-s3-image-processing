@@ -71,6 +71,11 @@ const FolderSchema = new mongoose.Schema(
           type: Date,
           default: Date.now,
         },
+
+        isLocker: {
+          type: Boolean,
+          default: false,
+        },
       },
     ],
   },
