@@ -812,6 +812,7 @@ router.post("/upload", upload.array("files"), async (req, res) => {
           try {
             await WebLink.create({
               fileId,
+              driveFileId:fileId,
               orderId: vendorId ? vendorId.toString() : folderName,
               orderById: customerId,
               orderByName: phoneNo || "",

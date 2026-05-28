@@ -107,8 +107,13 @@ const weblinkSchema = new mongoose.Schema(
 
 
 weblinkSchema.index(
-  { driveFileId: 1, orderId: 1 },
-  { unique: true }
+  {
+    unique: true,
+    partialFilterExpression: {
+      driveFileId: { $ne: null },
+      orderId: { $ne: null }
+    }
+  }
 );
 
 
