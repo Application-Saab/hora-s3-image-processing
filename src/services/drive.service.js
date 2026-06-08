@@ -614,11 +614,6 @@ if (clipPath && fs.existsSync(clipPath)) {
             },
       }
     );
-
-    console.log(
-      "Face Count Response:",
-      faceResponse.data
-    );
   } catch (error) {
     console.error(
       "❌ Face Count API Error:",
