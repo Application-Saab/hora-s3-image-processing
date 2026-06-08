@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const processDriveRoutes = require("./routes/processDrive.routes");
 const wonderlandEventRoutes = require("./routes/event.routes");
+const venueRoutes = require("./routes/venue.routes");
 require("dotenv").config();
 let bodyParser = require("body-parser");
 
@@ -24,6 +25,7 @@ app.use("/test", (req, res) => {
   res.json({ message: "Test route working !!!" });
 });
 app.use("/event", wonderlandEventRoutes);
+app.use("/venue", venueRoutes);
 app.use("/", processDriveRoutes);
 
 module.exports = app;
