@@ -8,30 +8,14 @@ const venueImagesSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
-    // fileId: {
-    //   type: String,
-    // //   unique: true,
-    // //   sparse: true,
-    // default: '',
-    // },
-    // status: {
-    //   type: String,
-    //   enum: ["uploading", "done", "failed"],
-    //   default: "done",
-    // },
     postById: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "users",
       required: true,
       trim: true,
     },
-    // retryCount: {
-    //   type: Number,
-    //   default: 0,
-    // },
     postByName: {
       type: String,
-      //   required: true,
       trim: true,
     },
     postUrl: {
@@ -54,19 +38,6 @@ const venueImagesSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
-    // postType: {
-    //   type: String,
-    //   enum: ["selfUploaded", "thankYouNote", "postBadge", "luckyDraw"],
-    //   required: true,
-    // },
-    // likeCounts: {
-    //   type: String,
-    //   default: "0",
-    // },
-    // commentCounts: {
-    //   type: String,
-    //   default: "0",
-    // },
 
     folderIds: {
       type: [String],
@@ -76,7 +47,7 @@ const venueImagesSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    versionKey: false, // disables __v
+    versionKey: false,
   },
 );
 
