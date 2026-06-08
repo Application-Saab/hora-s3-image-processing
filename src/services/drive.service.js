@@ -593,6 +593,35 @@ if (clipPath && fs.existsSync(clipPath)) {
   console.log("uploadedFiles -----------", results);
   console.log("Upload completed for orderId:", orderId);
 
+
+  if (totalDriveFiles === finalSuccessCount) {
+  try {
+    console.log(
+      "All files uploaded successfully. Starting face count..."
+    );
+
+    const formData = new FormData();
+    formData.append("folder_name", folderName);
+
+    const faceResponse = await axios.post(
+      "https://horaservices.com/face-api/count-unique-persons",
+      formData,
+      {
+        headers: formData.getHeaders
+          ? formData.getHeaders()
+          : {
+              "Content-Type": "multipart/form-data",
+            },
+      }
+    );
+  } catch (error) {
+    console.error(
+      "❌ Face Count API Error:",
+      error?.response?.data || error.message
+    );
+  }
+}
+
   await OrderModel.findOneAndUpdate(
     { order_id: orderId },
     {

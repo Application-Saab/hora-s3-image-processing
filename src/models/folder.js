@@ -11,7 +11,7 @@ const FolderSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
-      viewedBy: {
+    viewedBy: {
       type: [String], // userIds
       default: [],
       index: true
@@ -39,6 +39,27 @@ const FolderSchema = new mongoose.Schema(
       ref: "orders",
       index: true,
     },
+    totalPersonCount: {
+      type: Number,
+      default: 0,
+    }, 
+    deviceTracking: [
+      {
+        userId: {
+          type: String,
+          index: true,
+        },
+        deviceType: {
+          type: String,
+          enum: ["ios", "android"],
+        },
+        trackedAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
+
     subFolders: [
       {
         _id: {
@@ -61,11 +82,11 @@ const FolderSchema = new mongoose.Schema(
           index: true,
         },
         folderDp: {
-  fileUrl: { type: String },
-  thumbnailUrl: { type: String },
-  s3Key: { type: String },
-  thumbnailKey: { type: String }
-},
+          fileUrl: { type: String },
+          thumbnailUrl: { type: String },
+          s3Key: { type: String },
+          thumbnailKey: { type: String }
+        },
 
         createdAt: {
           type: Date,
