@@ -9,6 +9,7 @@ const VenueImages = require("../models/venue-images");
 
 const {
   generateThumbnail,
+  generateVideoPreview,
   upload,
   uploadFileToS3Wonderland,
 } = require("../utils/auth.util");
@@ -22,19 +23,29 @@ router.post(
   async (req, res) => {
     try {
       const { venueId } = req.params;
+
       const { postById, postByName, folder } = req.body;
 
-      // validations
+      // ---------------------------
+      // Validations
+      // ---------------------------
+
       if (!venueId || !mongoose.Types.ObjectId.isValid(venueId)) {
-        return res.status(400).json({ message: "Invalid venueId" });
+        return res.status(400).json({
+          message: "Invalid venueId",
+        });
       }
 
       if (!postById || !mongoose.Types.ObjectId.isValid(postById)) {
-        return res.status(400).json({ message: "Invalid postById" });
+        return res.status(400).json({
+          message: "Invalid postById",
+        });
       }
 
       if (!req.files || req.files.length === 0) {
-        return res.status(400).json({ message: "No files uploaded" });
+        return res.status(400).json({
+          message: "No files uploaded",
+        });
       }
 
       const createdDocs = [];
@@ -44,46 +55,87 @@ router.post(
         const fileName = file.filename;
 
         const isImage = file.mimetype.startsWith("image/");
+        const isVideo = file.mimetype.startsWith("video/") || file.mimetype === "image/gif";
 
-        if (!isImage) {
-          // skip non-image for venue (or you can throw error)
+        if (!isImage && !isVideo) {
           continue;
         }
 
         let thumbPath;
+        let clipPath;
 
         try {
           const key = `${folder}/${postById}/${venueId}/${Date.now()}-${fileName}`;
 
-          // create webp thumbnail
-          const thumbName = `webp_${fileName}.webp`;
-          thumbPath = path.join(TEMP_DIR, thumbName);
+          let finalData = {};
 
-          await generateThumbnail(filePath, thumbPath);
+          // ---------------------------
+          // IMAGE
+          // ---------------------------
 
-          // upload original image
-          const originalUpload = await uploadFileToS3Wonderland({
-            filePath,
-            key,
-            contentType: file.mimetype,
-          });
+          if (isImage) {
+            const thumbName = `webp_${fileName}.webp`;
 
-          // upload webp thumbnail
-          const thumbUpload = await uploadFileToS3Wonderland({
-            filePath: thumbPath,
-            key: `${folder}/${postById}/${venueId}/${thumbName}`,
-            contentType: "image/webp",
-          });
+            thumbPath = path.join(TEMP_DIR, thumbName);
 
-          // save DB
+            await generateThumbnail(filePath, thumbPath);
+
+            const originalUpload = await uploadFileToS3Wonderland({
+              filePath,
+              key,
+              contentType: file.mimetype,
+            });
+
+            const thumbUpload = await uploadFileToS3Wonderland({
+              filePath: thumbPath,
+              key: `${folder}/${postById}/${venueId}/${thumbName}`,
+              contentType: "image/webp",
+            });
+
+            finalData = {
+              postUrl: originalUpload.Location,
+              postKey: originalUpload.Key,
+              postWebpUrl: thumbUpload.Location,
+              postWebpKey: thumbUpload.Key,
+            };
+          }
+
+          // ---------------------------
+          // VIDEO
+          // ---------------------------
+
+          else if (isVideo) {
+            const clipName = `clip_${fileName}.mp4`;
+
+            clipPath = path.join(TEMP_DIR, clipName);
+
+            await generateVideoPreview(filePath, clipPath, 3);
+
+            const videoUpload = await uploadFileToS3Wonderland({
+              filePath,
+              key,
+              contentType: file.mimetype,
+            });
+
+            const clipUpload = await uploadFileToS3Wonderland({
+              filePath: clipPath,
+              key: `${folder}/${postById}/${venueId}/${clipName}`,
+              contentType: "video/mp4",
+            });
+
+            finalData = {
+              postUrl: videoUpload.Location,
+              postKey: videoUpload.Key,
+              postWebpUrl: clipUpload.Location,
+              postWebpKey: clipUpload.Key,
+            };
+          }
+
           const doc = await VenueImages.create({
             venueId,
             postById,
             postByName,
-            postUrl: originalUpload.Location,
-            postKey: originalUpload.Key,
-            postWebpUrl: thumbUpload.Location,
-            postWebpKey: thumbUpload.Key,
+            ...finalData,
             folderIds: [],
           });
 
@@ -91,20 +143,21 @@ router.post(
         } catch (err) {
           console.error("Single file upload error:", err);
         } finally {
-          // cleanup temp files
-          const paths = [filePath, thumbPath];
+          const paths = [filePath, thumbPath, clipPath];
+
           for (const p of paths) {
             if (!p) continue;
+
             try {
               await fsPromises.unlink(p);
-            } catch {}
+            } catch (err) {}
           }
         }
       }
 
       return res.status(201).json({
-        message: "Venue images uploaded successfully",
-        images: createdDocs,
+        message: "Venue media uploaded successfully",
+        media: createdDocs,
       });
     } catch (err) {
       console.error("Venue upload error:", err);
@@ -116,5 +169,6 @@ router.post(
     }
   }
 );
+
 
 module.exports = router;
