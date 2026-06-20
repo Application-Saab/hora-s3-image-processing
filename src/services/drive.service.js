@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const WebLink = require("../models/weblink-images.js");
 const OrderModel = require("../models/order.js")
+const { sendWhatsApp } = require('../utils/whatsappservice.js');
 
 const {
   generateThumbnail,
@@ -94,12 +95,12 @@ async function getTotalDriveFiles(folderId) {
 let driveCountQueue = Promise.resolve();
 
 
-  async function getDriveCountSequentially(folderId, orderId) {
+async function getDriveCountSequentially(folderId, orderId) {
 
   return new Promise((resolve, reject) => {
 
     driveCountQueue = driveCountQueue
-      .catch(() => {})
+      .catch(() => { })
       .then(async () => {
 
         console.log("STARTING COUNT FOR:", folderId, "ORDER ID", orderId);
@@ -110,7 +111,7 @@ let driveCountQueue = Promise.resolve();
 
         const endTime = Date.now();
 
-        console.log("COUNT FINISHED FOR:",folderId,"ORDER ID:",orderId,"TOTAL TIME:",`${((endTime - startTime) / 1000).toFixed(2)} sec`);
+        console.log("COUNT FINISHED FOR:", folderId, "ORDER ID:", orderId, "TOTAL TIME:", `${((endTime - startTime) / 1000).toFixed(2)} sec`);
 
         console.log("COUNT FINISHED FOR:", folderId, "ORDER ID", orderId);
 
@@ -155,19 +156,19 @@ async function handleDriveFolderUpload(
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
 
-const totalDriveFiles = await getDriveCountSequentially(folderId, orderId);
+  const totalDriveFiles = await getDriveCountSequentially(folderId, orderId);
 
 
-console.log("TOTAL FILES IN DRIVE =====", totalDriveFiles);
+  console.log("TOTAL FILES IN DRIVE =====", totalDriveFiles);
 
-await OrderModel.findOneAndUpdate(
-  { order_id: orderId },
-  {
-    $set: {
-      "imageUploadCounts.totalFromDrive": totalDriveFiles
+  await OrderModel.findOneAndUpdate(
+    { order_id: orderId },
+    {
+      $set: {
+        "imageUploadCounts.totalFromDrive": totalDriveFiles
+      }
     }
-  }
-);
+  );
 
 
   const folderPath = folderName;
@@ -232,25 +233,25 @@ await OrderModel.findOneAndUpdate(
 
         // new file
         await WebLink.findOneAndUpdate(
-  {
-    driveFileId,
-    orderId: orderId.toString()
-  },
-  {
-    $setOnInsert: {
-      driveFileId,
-      orderId: orderId.toString(),
-      mainFolderId,
-      status: "uploading",
-      retryCount: 0,
-      
-    }
-  },
-  {
-    upsert: true,
-    new: true
-  }
-);
+          {
+            driveFileId,
+            orderId: orderId.toString()
+          },
+          {
+            $setOnInsert: {
+              driveFileId,
+              orderId: orderId.toString(),
+              mainFolderId,
+              status: "uploading",
+              retryCount: 0,
+
+            }
+          },
+          {
+            upsert: true,
+            new: true
+          }
+        );
 
         console.log(`PLACEHOLDER CREATED: ${driveFileId}`);
       }
@@ -344,14 +345,14 @@ await OrderModel.findOneAndUpdate(
 
 
           if (filePath && fs.existsSync(filePath)) {
-  console.log("DELETE ORIGINAL IMAGE START");
-  await deleteFileWithRetry(filePath);
-}
+            console.log("DELETE ORIGINAL IMAGE START");
+            await deleteFileWithRetry(filePath);
+          }
 
-if (thumbnailPath && fs.existsSync(thumbnailPath)) {
-  console.log("DELETE THUMB START");
-  await deleteFileWithRetry(thumbnailPath);
-}
+          if (thumbnailPath && fs.existsSync(thumbnailPath)) {
+            console.log("DELETE THUMB START");
+            await deleteFileWithRetry(thumbnailPath);
+          }
 
           return { type: "image", fileName: originalName };
         }
@@ -375,7 +376,7 @@ if (thumbnailPath && fs.existsSync(thumbnailPath)) {
           console.log("STEP 5 VIDEO S3 UPLOAD VIDEO START", file.name)
 
 
-          const uploadVideo =  uploadFileToS3(
+          const uploadVideo = uploadFileToS3(
             filePath,
             fileName,
             folderPath,
@@ -383,7 +384,7 @@ if (thumbnailPath && fs.existsSync(thumbnailPath)) {
             file.mimeType
           );
 
-          const uploadClip =  uploadFileToS3(
+          const uploadClip = uploadFileToS3(
             clipPath,
             path.basename(clipPath),
             folderPath,
@@ -437,14 +438,14 @@ if (thumbnailPath && fs.existsSync(thumbnailPath)) {
 
 
           if (filePath && fs.existsSync(filePath)) {
-  console.log("DELETE VIDEO START");
-  await deleteFileWithRetry(filePath);
-}
+            console.log("DELETE VIDEO START");
+            await deleteFileWithRetry(filePath);
+          }
 
-if (clipPath && fs.existsSync(clipPath)) {
-  console.log("DELETE CLIP START");
-  await deleteFileWithRetry(clipPath);
-}
+          if (clipPath && fs.existsSync(clipPath)) {
+            console.log("DELETE CLIP START");
+            await deleteFileWithRetry(clipPath);
+          }
 
           return { type: "video", fileName: originalName };
         }
@@ -579,10 +580,10 @@ if (clipPath && fs.existsSync(clipPath)) {
   const results = await startProcessing();
 
   const finalSuccessCount = await WebLink.countDocuments({
-  orderId: orderId.toString(),
-  mainFolderId,
-  status: "done"
-});
+    orderId: orderId.toString(),
+    mainFolderId,
+    status: "done"
+  });
 
   console.log("===== FINAL REPORT =====");
   console.log("Total from Drive:", totalDriveFiles);
@@ -595,34 +596,34 @@ if (clipPath && fs.existsSync(clipPath)) {
 
 
   if (totalDriveFiles === finalSuccessCount) {
-  try {
-    console.log(
-      "All files uploaded successfully. Starting face count..."
-    );
+    try {
+      console.log(
+        "All files uploaded successfully. Starting face count..."
+      );
 
-    const formData = new FormData();
-    formData.append("folder_name", folderName);
+      const formData = new FormData();
+      formData.append("folder_name", folderName);
 
-    const faceResponse = await axios.post(
-      "https://horaservices.com/face-api/count-unique-persons",
-      formData,
-      {
-        headers: formData.getHeaders
-          ? formData.getHeaders()
-          : {
+      const faceResponse = await axios.post(
+        "https://horaservices.com/face-api/count-unique-persons",
+        formData,
+        {
+          headers: formData.getHeaders
+            ? formData.getHeaders()
+            : {
               "Content-Type": "multipart/form-data",
             },
-      }
-    );
-  } catch (error) {
-    console.error(
-      "❌ Face Count API Error:",
-      error?.response?.data || error.message
-    );
+        }
+      );
+    } catch (error) {
+      console.error(
+        "❌ Face Count API Error:",
+        error?.response?.data || error.message
+      );
+    }
   }
-}
 
-  await OrderModel.findOneAndUpdate(
+  const updatedOrder = await OrderModel.findOneAndUpdate(
     { order_id: orderId },
     {
       $set: {
@@ -631,6 +632,10 @@ if (clipPath && fs.existsSync(clipPath)) {
       }
     }
   );
+  const updatedOrderId = updatedOrder?.order_id + 10800
+  if (updatedOrder?.phone_no) {
+    await sendWhatsApp(updatedOrder.phone_no, updatedOrderId, updatedOrder.orderWebLink);
+  }
 
   return results;
   // await new Promise(resolve => setImmediate(resolve));
