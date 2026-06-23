@@ -81,6 +81,15 @@ const FolderSchema = new mongoose.Schema(
           required: true,
           index: true,
         },
+        personCount: {
+          type: Number,
+          default: 0,
+        },
+
+        isPersonFolder: {
+          type: Boolean,
+          default: false,
+        },
         folderDp: {
           fileUrl: { type: String },
           thumbnailUrl: { type: String },
