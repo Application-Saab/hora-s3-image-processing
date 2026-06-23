@@ -603,6 +603,8 @@ async function handleDriveFolderUpload(
 
       const formData = new FormData();
       formData.append("folder_name", folderName);
+      formData.append("folderId", mainFolderId);
+      formData.append("userId", customerId);
 
       const faceResponse = await axios.post(
         "https://horaservices.com/face-api/count-unique-persons",
