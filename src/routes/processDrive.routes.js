@@ -146,9 +146,13 @@ router.post("/create-subfolder", uploadSingel.single("file"), async (req, res) =
       isLocker: isLocker === "true" || isLocker === true,
     };
 
-    folder.subFolders.push(newSubFolder);
-    await folder.save();
-    const savedSubFolder = folder.subFolders[folder.subFolders.length - 1];
+    const updatedFolder = await Folder.findOneAndUpdate(
+      { folderName: folderName },
+      { $push: { subFolders: newSubFolder } },
+      { new: true }
+    );
+
+    const savedSubFolder = updatedFolder.subFolders[updatedFolder.subFolders.length - 1];
 
 
     res.status(201).json({
