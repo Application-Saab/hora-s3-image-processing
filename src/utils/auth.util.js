@@ -216,11 +216,32 @@ const generateVideoPreview = (
   });
 };
 
+const formatDuration = (seconds) => {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+};
+
+const getVideoDuration = (filePath) => {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err) {
+        console.error("FFprobe error:", err);
+        resolve("");
+      } else {
+        const duration = metadata?.format?.duration;
+        resolve(duration ? formatDuration(parseFloat(duration)) : "");
+      }
+    });
+  });
+};
+
 module.exports = {
   uploadFileToS3,
   uploadFileToS3Wonderland,
   generateThumbnail,
   generateVideoPreview,
+  getVideoDuration,
   upload,
   TEMP_DIR,
   deleteFileWithRetry,

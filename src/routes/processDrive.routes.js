@@ -3,7 +3,7 @@ const router = express.Router();
 const { handleDriveFolderUpload, uploadSingleImage } = require("../services/drive.service");
 const Folder = require("../models/folder");
 const fs = require("fs");
-const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview } = require("../utils/auth.util");
+const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVideoDuration } = require("../utils/auth.util");
 const multer = require("multer");
 const path = require("path");
 const WebLink = require("../models/weblink-images")
@@ -260,6 +260,8 @@ router.post("/upload-multiple", upload.array("images"), async (req, res) => {
 
           await generateVideoPreview(originalPath, clipPath, 3);
 
+          const durationVal = await getVideoDuration(originalPath);
+
           const videoRes = await uploadFileToS3(
             originalPath,
             file.filename,
@@ -288,6 +290,7 @@ router.post("/upload-multiple", upload.array("images"), async (req, res) => {
             thumbnailKey: null,
             videoClipUrl: clipRes.Location,
             videoClipKey: clipRes.Key,
+            duration: durationVal,
           });
 
           results.push({
@@ -892,6 +895,8 @@ router.post("/upload", upload.array("files"), async (req, res) => {
 
           await generateVideoPreview(filePath, clipPath, 3);
 
+          const durationVal = await getVideoDuration(filePath);
+
           const videoRes = await uploadFileToS3(
             filePath,
             fileName,
@@ -916,6 +921,7 @@ router.post("/upload", upload.array("files"), async (req, res) => {
 
             videoClipUrl: clipRes.Location,
             videoClipKey: clipRes.Key,
+            duration: durationVal,
           };
         } else {
           throw new Error("Unsupported file type");

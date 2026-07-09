@@ -10,6 +10,7 @@ const {
   uploadFileToS3,
   generateVideoPreview,
   deleteFileWithRetry,
+  getVideoDuration,
 } = require("../utils/auth.util.js");
 const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
 
@@ -371,6 +372,8 @@ async function handleDriveFolderUpload(
 
           await generateVideoPreview(filePath, clipPath, 3);
 
+          const durationVal = await getVideoDuration(filePath);
+
           console.log("STEP 4 VIDEO PREVIEW GENERATION COMPLETE", file.name)
 
           console.log("STEP 5 VIDEO S3 UPLOAD VIDEO START", file.name)
@@ -420,6 +423,7 @@ async function handleDriveFolderUpload(
 
                   videoClipUrl: clip?.Location || null,
                   videoClipKey: clip?.Key || null,
+                  duration: durationVal,
 
                   mainFolderId,
 
