@@ -119,23 +119,18 @@ const generateThumbnail = async (inputPath, outputPath) => {
   try {
     // Resize + compress
     const outputBuffer = await sharp(inputPath)
+      .resize({ width: 1080, withoutEnlargement: true })
       .rotate()
-      .webp({ quality: 50 })
+      .webp({ quality: 80 })
       .withMetadata({ orientation: 1 })
       .toBuffer();
 
-    // If still >100KB, compress more
-    const finalBuffer =
-      outputBuffer.length > 100 * 1024
-        ? await sharp(outputBuffer).webp({ quality: 1 }).toBuffer()
-        : outputBuffer;
-
     // Save thumbnail
-    await fsPromise.writeFile(outputPath, finalBuffer);
+    await fsPromise.writeFile(outputPath, outputBuffer);
 
     console.log(
       `Thumbnail saved at: ${outputPath} (Size: ${(
-        finalBuffer.length / 1024
+        outputBuffer.length / 1024
       ).toFixed(2)} KB)`,
     );
   } catch (error) {
@@ -216,6 +211,27 @@ const generateVideoPreview = (
   });
 };
 
+
+const formatDuration = (seconds) => {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+};
+
+const getVideoDuration = (filePath) => {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err) {
+        console.error("FFprobe error:", err);
+        resolve("");
+      } else {
+        const duration = metadata?.format?.duration;
+        resolve(duration ? formatDuration(parseFloat(duration)) : "");
+      }
+    });
+  });
+};
+
 module.exports = {
   uploadFileToS3,
   uploadFileToS3Wonderland,
@@ -224,4 +240,5 @@ module.exports = {
   upload,
   TEMP_DIR,
   deleteFileWithRetry,
+  getVideoDuration,
 };

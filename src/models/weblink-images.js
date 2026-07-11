@@ -85,6 +85,10 @@ const weblinkSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    duration: {
+      type: String,
+      default: "",
+    },
 
     folderIds: {
       type: [String],
