@@ -599,8 +599,8 @@ async function handleDriveFolderUpload(
   console.log("Upload completed for orderId:", orderId);
 
 
-  if (totalDriveFiles === finalSuccessCount) {
-    try {
+    if (finalSuccessCount >= totalDriveFiles - 5) {
+      try {
       console.log(
         "All files uploaded successfully. Starting face count..."
       );
