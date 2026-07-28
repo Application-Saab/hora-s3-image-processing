@@ -111,15 +111,5 @@ const FolderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-FolderSchema.index(
-  { customerId: 1, eventId: 1 },
-  {
-    unique: true,
-    partialFilterExpression: {
-      eventId: { $exists: true }
-    }
-  }
-);
-
 
 module.exports = mongoose.model("Folder", FolderSchema);
