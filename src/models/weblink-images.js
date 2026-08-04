@@ -89,7 +89,10 @@ const weblinkSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
-
+    capturedAt: {
+      type: Date,
+      default: null
+    },
     folderIds: {
       type: [String],
       default: [],

@@ -4,6 +4,7 @@ const path = require("path");
 const WebLink = require("../models/weblink-images.js");
 const OrderModel = require("../models/order.js")
 const { sendWhatsApp } = require('../utils/whatsappservice.js');
+const { exiftool } = require("exiftool-vendored");
 
 const {
   generateThumbnail,
@@ -21,6 +22,38 @@ function getFolderIdFromUrl(url) {
   const match = url.match(regex);
   return match ? match[1] : null;
 }
+
+async function getCapturedDate(filePath) {
+  try {
+    const tags = await exiftool.read(filePath);
+
+    // 1. Mobile/Camera Photos (JPEG, HEIC, RAW)
+    // 2. Mobile/Camera Videos (MP4, MOV, MKV)
+    const rawDate =
+      tags.DateTimeOriginal ||   // Photos ke liye primary
+      tags.CreationDate ||       // QuickTime / iPhone MP4 & MOV videos ke liye primary
+      tags.CreateDate ||         // General MP4 / Camera videos
+      tags.MediaCreateDate ||    // Specific Video Track creation date
+      tags.FileModifyDate ||     // Fallback (file system date)
+      null;
+
+    if (rawDate) {
+      // ExifTool internal date object / string ko JS Date me convert karna
+      const parsedDate = new Date(rawDate.toString());
+
+      // Check for valid Date
+      if (!isNaN(parsedDate.getTime())) {
+        return parsedDate;
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.log(`⚠️ Metadata read error for ${path.basename(filePath)}:`, error.message);
+    return null;
+  }
+}
+
 async function isFolderPubliclyAccessible(folderId, apiKey) {
   try {
     const metadataUrl = `https://www.googleapis.com/drive/v3/files/${folderId}?fields=permissions&key=${apiKey}`;
@@ -273,6 +306,10 @@ async function handleDriveFolderUpload(
         try {
           thumbnailPath = path.join(tempDir, `thumb_${driveFileId}.webp`);
 
+          // 📸 STEP 2.5: Extract Captured At Date from local file
+          const capturedAtDate = await getCapturedDate(filePath);
+          console.log(`📸 CAPTURED AT DATE FOR ${file.name}:`, capturedAtDate);
+
           const uploadOriginal = uploadFileToS3(
             filePath,
             fileName,
@@ -325,6 +362,8 @@ async function handleDriveFolderUpload(
                   thumbnailImageUrl: thumb?.Location || null,
                   thumbnailKey: thumb?.Key || null,
 
+                  capturedAt: capturedAtDate,
+
                   videoClipUrl: null,
                   videoClipKey: null,
 
@@ -370,6 +409,8 @@ async function handleDriveFolderUpload(
         try {
           console.log("STEP 3 GENERATE PREVIEW CLIP START", file.name)
 
+          const capturedAtDate = await getCapturedDate(filePath);
+          console.log(`🎥 VIDEO CAPTURED AT DATE FOR ${file.name}:`, capturedAtDate);
           await generateVideoPreview(filePath, clipPath, 3);
 
           const durationVal = await getVideoDuration(filePath);
@@ -420,6 +461,8 @@ async function handleDriveFolderUpload(
 
                   thumbnailImageUrl: null,
                   thumbnailKey: null,
+
+                  capturedAt: capturedAtDate,
 
                   videoClipUrl: clip?.Location || null,
                   videoClipKey: clip?.Key || null,
@@ -599,35 +642,35 @@ async function handleDriveFolderUpload(
   console.log("Upload completed for orderId:", orderId);
 
 
-    if (finalSuccessCount >= totalDriveFiles - 5) {
-      try {
-      console.log(
-        "All files uploaded successfully. Starting face count..."
-      );
+  //   if (finalSuccessCount >= totalDriveFiles - 5) {
+  //     try {
+  //     console.log(
+  //       "All files uploaded successfully. Starting face count..."
+  //     );
 
-      const formData = new FormData();
-      formData.append("folder_name", folderName);
-      formData.append("folderId", mainFolderId);
-      formData.append("userId", customerId);
+  //     const formData = new FormData();
+  //     formData.append("folder_name", folderName);
+  //     formData.append("folderId", mainFolderId);
+  //     formData.append("userId", customerId);
 
-      const faceResponse = await axios.post(
-        "https://horaservices.com/face-api/count-unique-persons",
-        formData,
-        {
-          headers: formData.getHeaders
-            ? formData.getHeaders()
-            : {
-              "Content-Type": "multipart/form-data",
-            },
-        }
-      );
-    } catch (error) {
-      console.error(
-        "❌ Face Count API Error:",
-        error?.response?.data || error.message
-      );
-    }
-  }
+  //     const faceResponse = await axios.post(
+  //       "https://horaservices.com/face-api/count-unique-persons",
+  //       formData,
+  //       {
+  //         headers: formData.getHeaders
+  //           ? formData.getHeaders()
+  //           : {
+  //             "Content-Type": "multipart/form-data",
+  //           },
+  //       }
+  //     );
+  //   } catch (error) {
+  //     console.error(
+  //       "❌ Face Count API Error:",
+  //       error?.response?.data || error.message
+  //     );
+  //   }
+  // }
 
   const updatedOrder = await OrderModel.findOneAndUpdate(
     { order_id: orderId },
