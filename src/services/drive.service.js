@@ -457,6 +457,15 @@ async function handleDriveFolderUpload(
           console.log('video upload error', error); throw error;
         }
       }
+      else {
+        console.log(`⚠️ Unsupported format, deleting from server: ${file.name}`);
+
+        if (filePath && fs.existsSync(filePath)) {
+          await deleteFileWithRetry(filePath);
+        }
+
+        return { skipped: true, reason: "unsupported_format", fileName: file.name };
+      }
     }
     // catch (err) {
     //   console.error(`Error processing ------------ ${file?.name}:`, err.message);
