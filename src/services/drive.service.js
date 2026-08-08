@@ -4,6 +4,7 @@ const path = require("path");
 const WebLink = require("../models/weblink-images.js");
 const OrderModel = require("../models/order.js")
 const { sendWhatsApp } = require('../utils/whatsappservice.js');
+const FolderModel = require("../models/folder.js");
 
 const {
   generateThumbnail,
@@ -638,6 +639,14 @@ async function handleDriveFolderUpload(
       }
     }
   );
+
+  await FolderModel.updateOne(
+    { _id: mainFolderId },
+    { $set: { status: "done" } }
+  );
+
+  console.log(`Folder status set to "done" for mainFolderId: ${mainFolderId}`);
+
   const updatedOrderId = updatedOrder?.order_id + 10800
   if (updatedOrder?.phone_no) {
     await sendWhatsApp(updatedOrder.phone_no, updatedOrderId, updatedOrder.orderWebLink);

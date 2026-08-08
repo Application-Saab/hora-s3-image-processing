@@ -59,6 +59,11 @@ const FolderSchema = new mongoose.Schema(
         },
       },
     ],
+    status: {
+      type: String,
+      enum: ["processing", "done", "failed"],
+      default: "processing"
+    },
 
     subFolders: [
       {
