@@ -458,13 +458,62 @@ async function handleDriveFolderUpload(
         }
       }
       else {
-        console.log(`⚠️ Unsupported format, deleting from server: ${file.name}`);
+        console.log(`⚠️ Unsupported format: ${file.name}`);
 
-        if (filePath && fs.existsSync(filePath)) {
-          await deleteFileWithRetry(filePath);
+        // ==========================================
+        // DELETE ORIGINAL FILE FROM tempUploads
+        // ==========================================
+        if (filePath) {
+          try {
+            if (fs.existsSync(filePath)) {
+              console.log("🗑️ DELETE ORIGINAL TEMP FILE:", filePath);
+
+              await deleteFileWithRetry(filePath);
+
+              // Double check
+              if (!fs.existsSync(filePath)) {
+                console.log("✅ ORIGINAL TEMP FILE DELETED:", filePath);
+              } else {
+                console.log("❌ ORIGINAL TEMP FILE STILL EXISTS:", filePath);
+              }
+            } else {
+              console.log("⚠️ ORIGINAL TEMP FILE NOT FOUND:", filePath);
+            }
+          } catch (deleteError) {
+            console.error(
+              "❌ ORIGINAL TEMP FILE DELETE ERROR:",
+              deleteError.message
+            );
+          }
         }
 
-        return { skipped: true, reason: "unsupported_format", fileName: file.name };
+        // ==========================================
+        // DELETE MONGO DOCUMENT
+        // ==========================================
+        try {
+          const deleteResult = await WebLink.deleteOne({
+            driveFileId: file.id,
+            orderId: orderId.toString(),
+            mainFolderId
+          });
+
+          console.log(
+            "🗑️ MONGO DELETE RESULT:",
+            deleteResult
+          );
+
+        } catch (dbError) {
+          console.error(
+            "❌ MONGO DELETE ERROR:",
+            dbError.message
+          );
+        }
+
+        return {
+          skipped: true,
+          reason: "unsupported_format",
+          fileName: file.name
+        };
       }
     }
     // catch (err) {
@@ -507,6 +556,67 @@ async function handleDriveFolderUpload(
         failCount++;
         return { fileName: file?.name, error: err.message };
       }
+    }
+    finally {
+      console.log(`🧹 FINAL CLEANUP START: ${file?.name}`);
+
+      // Original file from tempUploads
+      if (filePath && fs.existsSync(filePath)) {
+        try {
+          console.log(`🗑️ DELETE TEMP ORIGINAL: ${filePath}`);
+
+          await deleteFileWithRetry(filePath);
+
+          if (!fs.existsSync(filePath)) {
+            console.log(`✅ TEMP ORIGINAL DELETED: ${filePath}`);
+          } else {
+            console.log(`❌ TEMP ORIGINAL STILL EXISTS: ${filePath}`);
+          }
+        } catch (cleanupError) {
+          console.error(
+            `❌ TEMP ORIGINAL DELETE ERROR: ${file?.name}`,
+            cleanupError.message
+          );
+        }
+      }
+
+      // Thumbnail if it was created
+      if (thumbnailPath && fs.existsSync(thumbnailPath)) {
+        try {
+          console.log(`🗑️ DELETE TEMP THUMB: ${thumbnailPath}`);
+
+          await deleteFileWithRetry(thumbnailPath);
+
+          if (!fs.existsSync(thumbnailPath)) {
+            console.log(`✅ TEMP THUMB DELETED: ${thumbnailPath}`);
+          }
+        } catch (cleanupError) {
+          console.error(
+            `❌ TEMP THUMB DELETE ERROR: ${file?.name}`,
+            cleanupError.message
+          );
+        }
+      }
+
+      // Video clip if it was created
+      if (clipPath && fs.existsSync(clipPath)) {
+        try {
+          console.log(`🗑️ DELETE TEMP CLIP: ${clipPath}`);
+
+          await deleteFileWithRetry(clipPath);
+
+          if (!fs.existsSync(clipPath)) {
+            console.log(`✅ TEMP CLIP DELETED: ${clipPath}`);
+          }
+        } catch (cleanupError) {
+          console.error(
+            `❌ TEMP CLIP DELETE ERROR: ${file?.name}`,
+            cleanupError.message
+          );
+        }
+      }
+
+      console.log(`🧹 FINAL CLEANUP DONE: ${file?.name}`);
     }
   }
 
