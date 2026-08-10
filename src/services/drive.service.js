@@ -527,6 +527,10 @@ async function handleDriveFolderUpload(
     `, err.message);
       console.log(`Retry Count: ${retryCount}`);
 
+      // 💥 ADD THIS: Pre-retry cleanup (Taki next attempt me clean fresh download ho)
+      if (filePath && fs.existsSync(filePath)) await deleteFileWithRetry(filePath).catch(() => { });
+      if (thumbnailPath && fs.existsSync(thumbnailPath)) await deleteFileWithRetry(thumbnailPath).catch(() => { });
+      if (clipPath && fs.existsSync(clipPath)) await deleteFileWithRetry(clipPath).catch(() => { });
 
       await WebLink.updateOne(
         {
@@ -546,7 +550,7 @@ async function handleDriveFolderUpload(
 
       if (retryCount < 2) {
         console.log(`--------------- RETRY START  ${file?.name} | Attempt ${retryCount + 2} | failedFiles ARRAY  : ${failedFiles}`);
-        return processFile(file, retryCount + 1);
+        return await processFile(file, retryCount + 1);
       } else {
         console.log(`Max retries reached for ${file?.name}`);
         failedFiles.push({
@@ -556,69 +560,8 @@ async function handleDriveFolderUpload(
         failCount++;
         return { fileName: file?.name, error: err.message };
       }
-    }
-    finally {
-      console.log(`🧹 FINAL CLEANUP START: ${file?.name}`);
-
-      // Original file from tempUploads
-      if (filePath && fs.existsSync(filePath)) {
-        try {
-          console.log(`🗑️ DELETE TEMP ORIGINAL: ${filePath}`);
-
-          await deleteFileWithRetry(filePath);
-
-          if (!fs.existsSync(filePath)) {
-            console.log(`✅ TEMP ORIGINAL DELETED: ${filePath}`);
-          } else {
-            console.log(`❌ TEMP ORIGINAL STILL EXISTS: ${filePath}`);
-          }
-        } catch (cleanupError) {
-          console.error(
-            `❌ TEMP ORIGINAL DELETE ERROR: ${file?.name}`,
-            cleanupError.message
-          );
-        }
-      }
-
-      // Thumbnail if it was created
-      if (thumbnailPath && fs.existsSync(thumbnailPath)) {
-        try {
-          console.log(`🗑️ DELETE TEMP THUMB: ${thumbnailPath}`);
-
-          await deleteFileWithRetry(thumbnailPath);
-
-          if (!fs.existsSync(thumbnailPath)) {
-            console.log(`✅ TEMP THUMB DELETED: ${thumbnailPath}`);
-          }
-        } catch (cleanupError) {
-          console.error(
-            `❌ TEMP THUMB DELETE ERROR: ${file?.name}`,
-            cleanupError.message
-          );
-        }
-      }
-
-      // Video clip if it was created
-      if (clipPath && fs.existsSync(clipPath)) {
-        try {
-          console.log(`🗑️ DELETE TEMP CLIP: ${clipPath}`);
-
-          await deleteFileWithRetry(clipPath);
-
-          if (!fs.existsSync(clipPath)) {
-            console.log(`✅ TEMP CLIP DELETED: ${clipPath}`);
-          }
-        } catch (cleanupError) {
-          console.error(
-            `❌ TEMP CLIP DELETE ERROR: ${file?.name}`,
-            cleanupError.message
-          );
-        }
-      }
-
-      console.log(`🧹 FINAL CLEANUP DONE: ${file?.name}`);
-    }
   }
+}
 
   const MAX_CONCURRENT = 1;
   let activeCount = 0;
@@ -821,4 +764,3 @@ async function uploadSingleImage({
 
 
 module.exports = { handleDriveFolderUpload, uploadSingleImage };
-// http://localhost:3001/weblink-gallery?folderName=23360_695755bea533d6d56bc521e7_9406754372&customerId=695755bea533d6d56bc521e7
