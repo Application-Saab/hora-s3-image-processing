@@ -527,7 +527,6 @@ async function handleDriveFolderUpload(
     `, err.message);
       console.log(`Retry Count: ${retryCount}`);
 
-      // 💥 ADD THIS: Pre-retry cleanup (Taki next attempt me clean fresh download ho)
       if (filePath && fs.existsSync(filePath)) await deleteFileWithRetry(filePath).catch(() => { });
       if (thumbnailPath && fs.existsSync(thumbnailPath)) await deleteFileWithRetry(thumbnailPath).catch(() => { });
       if (clipPath && fs.existsSync(clipPath)) await deleteFileWithRetry(clipPath).catch(() => { });
