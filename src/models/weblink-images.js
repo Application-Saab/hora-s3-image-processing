@@ -24,6 +24,12 @@ const weblinkSchema = new mongoose.Schema(
 
     },
 
+    imageUrl1080: { type: String, default: null },
+    imageUrl2160: { type: String, default: null },
+    imageUrl2880: { type: String, default: null },
+    imageUrl3384: { type: String, default: null },
+    imageUrl4320: { type: String, default: null },
+
     fileId: {
       type: String,
       unique: true,

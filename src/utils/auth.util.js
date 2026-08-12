@@ -139,6 +139,19 @@ const generateThumbnail = async (inputPath, outputPath) => {
   }
 };
 
+
+
+// Helper function to resize image maintaining aspect ratio
+async function resizeImage(inputPath, outputPath, targetWidth) {
+  await sharp(inputPath)
+    .resize({
+      width: targetWidth,
+      withoutEnlargement: true 
+    })
+    .jpeg({ quality: 85 })
+    .toFile(outputPath);
+}
+
 const TEMP_DIR = path.join(process.cwd(), "tempUploads");
 
 // ensure temp folder exists
@@ -236,6 +249,7 @@ module.exports = {
   uploadFileToS3,
   uploadFileToS3Wonderland,
   generateThumbnail,
+  resizeImage,
   generateVideoPreview,
   upload,
   TEMP_DIR,
