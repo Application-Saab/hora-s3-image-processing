@@ -146,9 +146,9 @@ async function resizeImage(inputPath, outputPath, targetWidth) {
   await sharp(inputPath)
     .resize({
       width: targetWidth,
-      withoutEnlargement: true // Agar original image width 1080/2160 se chhoti hai toh upscale nahi karega
+      withoutEnlargement: true 
     })
-    .jpeg({ quality: 85 }) // JPEG format with high quality
+    .jpeg({ quality: 85 })
     .toFile(outputPath);
 }
 
