@@ -570,6 +570,64 @@ async function handleDriveFolderUpload(
           console.log('video upload error', error); throw error;
         }
       }
+      else {
+        console.log(`⚠️ Unsupported format: ${file.name}`);
+
+        // ==========================================
+        // DELETE ORIGINAL FILE FROM tempUploads
+        // ==========================================
+        if (filePath) {
+          try {
+            if (fs.existsSync(filePath)) {
+              console.log("🗑️ DELETE ORIGINAL TEMP FILE:", filePath);
+
+              await deleteFileWithRetry(filePath);
+
+              // Double check
+              if (!fs.existsSync(filePath)) {
+                console.log("✅ ORIGINAL TEMP FILE DELETED:", filePath);
+              } else {
+                console.log("❌ ORIGINAL TEMP FILE STILL EXISTS:", filePath);
+              }
+            } else {
+              console.log("⚠️ ORIGINAL TEMP FILE NOT FOUND:", filePath);
+            }
+          } catch (deleteError) {
+            console.error(
+              "❌ ORIGINAL TEMP FILE DELETE ERROR:",
+              deleteError.message
+            );
+          }
+        }
+
+        // ==========================================
+        // DELETE MONGO DOCUMENT
+        // ==========================================
+        try {
+          const deleteResult = await WebLink.deleteOne({
+            driveFileId: file.id,
+            orderId: orderId.toString(),
+            mainFolderId
+          });
+
+          console.log(
+            "🗑️ MONGO DELETE RESULT:",
+            deleteResult
+          );
+
+        } catch (dbError) {
+          console.error(
+            "❌ MONGO DELETE ERROR:",
+            dbError.message
+          );
+        }
+
+        return {
+          skipped: true,
+          reason: "unsupported_format",
+          fileName: file.name
+        };
+      }
     }
     // catch (err) {
     //   console.error(`Error processing ------------ ${file?.name}:`, err.message);
@@ -582,6 +640,9 @@ async function handleDriveFolderUpload(
     `, err.message);
       console.log(`Retry Count: ${retryCount}`);
 
+      if (filePath && fs.existsSync(filePath)) await deleteFileWithRetry(filePath).catch(() => { });
+      if (thumbnailPath && fs.existsSync(thumbnailPath)) await deleteFileWithRetry(thumbnailPath).catch(() => { });
+      if (clipPath && fs.existsSync(clipPath)) await deleteFileWithRetry(clipPath).catch(() => { });
 
       await WebLink.updateOne(
         {
@@ -601,7 +662,7 @@ async function handleDriveFolderUpload(
 
       if (retryCount < 2) {
         console.log(`--------------- RETRY START  ${file?.name} | Attempt ${retryCount + 2} | failedFiles ARRAY  : ${failedFiles}`);
-        return processFile(file, retryCount + 1);
+        return await processFile(file, retryCount + 1);
       } else {
         console.log(`Max retries reached for ${file?.name}`);
         failedFiles.push({
@@ -611,8 +672,8 @@ async function handleDriveFolderUpload(
         failCount++;
         return { fileName: file?.name, error: err.message };
       }
-    }
   }
+}
 
   const MAX_CONCURRENT = 1;
   let activeCount = 0;
@@ -823,4 +884,3 @@ async function uploadSingleImage({
 
 
 module.exports = { handleDriveFolderUpload, uploadSingleImage };
-// http://localhost:3001/weblink-gallery?folderName=23360_695755bea533d6d56bc521e7_9406754372&customerId=695755bea533d6d56bc521e7
