@@ -271,15 +271,21 @@ async function handleDriveFolderUpload(
 
       // ================= IMAGE =================
       if (isImage) {
-        let path1080, path2160;
+        let path1080, path2160, path2880, path3384, path4320;
         try {
           // File Paths for all variations
           thumbnailPath = path.join(tempDir, `thumb_${driveFileId}.webp`);
           path1080 = path.join(tempDir, `1080_${driveFileId}.jpg`);
           path2160 = path.join(tempDir, `2160_${driveFileId}.jpg`);
+          path2880 = path.join(tempDir, `2880_${driveFileId}.jpg`);
+          path3384 = path.join(tempDir, `3384_${driveFileId}.jpg`);
+          path4320 = path.join(tempDir, `4320_${driveFileId}.jpg`);
 
           const fileName1080 = `1080_${driveFileId}.jpeg`;
           const fileName2160 = `2160_${driveFileId}.jpeg`;
+          const fileName2880 = `2880_${driveFileId}.jpeg`;
+          const fileName3384 = `3384_${driveFileId}.jpeg`;
+          const fileName4320 = `4320_${driveFileId}.jpeg`;
           const thumbFileName = `thumb_${driveFileId}.webp`;
 
           console.log("STEP 3 GENERATING ALL IMAGE VARIATIONS START", file.name);
@@ -293,8 +299,12 @@ async function handleDriveFolderUpload(
           // 3. Generate 2160px Width (JPEG, Auto Height)
           const gen2160 = resizeImage(filePath, path2160, 2160);
 
+          const gen2880 = resizeImage(filePath, path2880, 2880);
+          const gen3384 = resizeImage(filePath, path3384, 3384);
+          const gen4320 = resizeImage(filePath, path4320, 4320);
+
           // Run image processing in parallel
-          await Promise.all([genThumb, gen1080, gen2160]);
+          await Promise.all([genThumb, gen1080, gen2160, gen2880, gen3384, gen4320]);
 
           console.log("STEP 4 VARIATIONS GENERATED SUCCESSFULLY", file.name);
 
@@ -333,12 +343,40 @@ async function handleDriveFolderUpload(
             "image/jpeg"
           );
 
+          const upload2880 = uploadFileToS3(
+            path2880,
+            fileName2880,
+            folderPath,
+            phoneNo,
+            "image/jpeg"
+          );
+
+          const upload3384 = uploadFileToS3(
+            path3384,
+            fileName3384,
+            folderPath,
+            phoneNo,
+            "image/jpeg"
+          );
+          
+          const upload4320 = uploadFileToS3(
+            path4320,
+            fileName4320,
+            folderPath,
+            phoneNo,
+            "image/jpeg"
+          );
+
+
           // Wait for all 4 uploads to finish
-          const [original, thumb, res1080, res2160] = await Promise.all([
+          const [original, thumb, res1080, res2160, res2880, res3384, res4320] = await Promise.all([
             uploadOriginal,
             uploadThumb,
             upload1080,
-            upload2160
+            upload2160,
+            upload2880,
+            upload3384,
+            upload4320
           ]);
 
           console.log("STEP 6 ALL 4 S3 UPLOADS COMPLETE", file.name);
@@ -369,10 +407,14 @@ async function handleDriveFolderUpload(
 
                   // New Resized Image URLs & Keys
                   imageUrl1080: res1080?.Location || null,
-                  imageKey1080: res1080?.Key || null,
 
                   imageUrl2160: res2160?.Location || null,
-                  imageKey2160: res2160?.Key || null,
+
+                  imageUrl2880: res2880?.Location || null,
+
+                  imageUrl3384: res3384?.Location || null,
+
+                  imageUrl4320: res4320?.Location || null,
 
                   videoClipUrl: null,
                   videoClipKey: null,
@@ -406,6 +448,15 @@ async function handleDriveFolderUpload(
           if (path2160 && fs.existsSync(path2160)) {
             await deleteFileWithRetry(path2160);
           }
+          if (path2880 && fs.existsSync(path2880)) {
+            await deleteFileWithRetry(path2880);
+          }
+          if (path3384 && fs.existsSync(path3384)) {
+            await deleteFileWithRetry(path3384);
+          }
+          if (path4320 && fs.existsSync(path4320)) {
+            await deleteFileWithRetry(path4320);
+          }
 
           return { type: "image", fileName: originalName };
         }
@@ -415,6 +466,9 @@ async function handleDriveFolderUpload(
           if (thumbnailPath && fs.existsSync(thumbnailPath)) await deleteFileWithRetry(thumbnailPath).catch(() => { });
           if (path1080 && fs.existsSync(path1080)) await deleteFileWithRetry(path1080).catch(() => { });
           if (path2160 && fs.existsSync(path2160)) await deleteFileWithRetry(path2160).catch(() => { });
+          if (path2880 && fs.existsSync(path2880)) await deleteFileWithRetry(path2880).catch(() => { });
+          if (path3384 && fs.existsSync(path3384)) await deleteFileWithRetry(path3384).catch(() => { });
+          if (path4320 && fs.existsSync(path4320)) await deleteFileWithRetry(path4320).catch(() => { });
 
           console.log('image upload error', error);
           throw error;
