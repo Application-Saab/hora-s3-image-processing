@@ -1092,4 +1092,89 @@ router.put(
   }
 );
 
+
+/**
+ * Helper function: S3 URL se S3 Key extract karne ke liye
+ */
+const getS3KeyFromUrl = (url) => {
+  if (!url) return null;
+  try {
+    const parsedUrl = new URL(url);
+    // Pathname se leading '/' hatayenge aur decoded key return karenge
+    return decodeURIComponent(parsedUrl.pathname.substring(1));
+  } catch (err) {
+    return null;
+  }
+};
+
+/**
+ * DELETE /delete-by-main-folder/:mainFolderId
+ * Deletes all WebLinks and their 7 S3 image variants by mainFolderId
+ */
+router.delete("/delete-by-main-folder/:mainFolderId", async (req, res) => {
+  const { mainFolderId } = req.params;
+
+  try {
+    // 1. mainFolderId wale saare documents MongoDB se fetch karein
+    const images = await WebLink.find({ mainFolderId });
+
+    if (!images || images.length === 0) {
+      return res.status(404).json({ message: "No images found for this mainFolderId" });
+    }
+
+    // 2. Saare images ke S3 Keys ek Set me accumulate karein (duplicates avoid karne ke liye)
+    const keysSet = new Set();
+
+    images.forEach((img) => {
+      // Explicit keys
+      if (img.originalKey) keysSet.add(img.originalKey);
+      if (img.thumbnailKey) keysSet.add(img.thumbnailKey);
+      if (img.videoClipKey) keysSet.add(img.videoClipKey);
+
+      // Resolution variant URLs se keys extract karein
+      const variantUrls = [
+        img.imageUrl1080,
+        img.imageUrl2160,
+        img.imageUrl2880,
+        img.imageUrl3384,
+        img.imageUrl4320,
+      ];
+
+      variantUrls.forEach((url) => {
+        const key = getS3KeyFromUrl(url);
+        if (key) keysSet.add(key);
+      });
+    });
+
+    // Keys ko S3 deleteObjects format me convert karein [{ Key: '...' }, ...]
+    const objectsToDelete = Array.from(keysSet).map((key) => ({ Key: key }));
+
+    // 3. AWS S3 se bulk delete karein (Max 1000 keys per chunk)
+    if (objectsToDelete.length > 0) {
+      const chunkSize = 1000;
+      for (let i = 0; i < objectsToDelete.length; i += chunkSize) {
+        const chunk = objectsToDelete.slice(i, i + chunkSize);
+        await s3
+          .deleteObjects({
+            Bucket: process.env.S3_BUCKET_NAME,
+            Delete: { Objects: chunk },
+          })
+          .promise();
+      }
+    }
+
+    // 4. MongoDB se saare matching documents delete karein
+    const deleteResult = await WebLink.deleteMany({ mainFolderId });
+
+    res.json({
+      message: "Main folder images and S3 files deleted successfully",
+      deletedCountFromDb: deleteResult.deletedCount,
+      deletedS3FilesCount: objectsToDelete.length,
+    });
+  } catch (err) {
+    console.error("Delete by mainFolderId failed:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+});
+
 module.exports = router;
