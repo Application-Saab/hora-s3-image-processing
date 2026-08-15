@@ -7,8 +7,11 @@ const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVide
 const multer = require("multer");
 const path = require("path");
 const WebLink = require("../models/weblink-images")
+const Weblink = require("../models/weblink-images")
 const fsPromises = require("fs").promises;
 const AWS = require("aws-sdk");
+const { S3Client, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+
 
 
 const s3 = new AWS.S3({
@@ -336,395 +339,6 @@ router.post("/upload-multiple", upload.array("images"), async (req, res) => {
     return res.status(500).json({ message: err.message });
   }
 });
-
-//admin panel create folder
-// router.post("/upload", upload.array("files"), async (req, res) => {
-//   try {
-//     const { folderName, customerId, vendorId, phoneNo, isWeblink=true, fileId } = req.body;
-
-//     if (!fileId) {
-//     return res.status(400).json({ message: "fileId is required" });
-//     }
-
-//     if (!folderName || !customerId) {
-//       return res
-//         .status(400)
-//         .json({ message: "Folder Name and Customer ID are required." });
-//     }
-
-//     const folder = await Folder.findOne({ folderName }).lean();
-
-//     if (!folder) {
-//       return res.status(404).json({
-//         message: "Folder not found",
-//       });
-//     }
-
-//     const mainFolderId = folder._id;
-
-//     if (!req.files || req.files.length === 0) {
-//       return res.status(400).json({ message: "No files were uploaded." });
-//     }
-
-//     const folderPath =  isWeblink ?
-//      folderName : vendorId  ? 
-//      `${folderName}_${customerId}_${vendorId}` :
-//      `${folderName}_${customerId}`; 
-
-//     const uploadedFiles = [];
-
-//     for (const file of req.files) {
-//       const filePath = file.path;
-//       const fileName = file.filename;
-
-//       const isImage = file.mimetype.startsWith("image/");
-//       const isVideo = file.mimetype.startsWith("video/");
-
-//       let thumbPath;
-//       let clipPath;
-
-//       try {
-//         // ================= IMAGE =================
-//         if (isImage) {
-//           const thumbName = `thumb_${fileName}.webp`;
-//           thumbPath = path.join(TEMP_DIR, thumbName);
-
-//           await generateThumbnail(filePath, thumbPath);
-
-//           const originalRes = await uploadFileToS3(
-//             filePath,
-//             fileName,
-//             folderPath,
-//             phoneNo,
-//             file.mimetype
-//           );
-
-//           const thumbRes = await uploadFileToS3(
-//             thumbPath,
-//             thumbName,
-//             folderPath,
-//             phoneNo,
-//             "image/webp"
-//           );
-
-//           await WebLink.create({
-//             orderId: vendorId ? vendorId.toString() : folderName,
-//             orderById: customerId,
-//             orderByName: phoneNo || "",
-//             type: "image",
-//             originalUrl: originalRes.Location,
-//             originalKey: originalRes.Key,
-//             thumbnailImageUrl: thumbRes.Location,
-//             thumbnailKey: thumbRes.Key,
-//             videoClipUrl: null,
-//             videoClipKey: null,
-//             mainFolderId,
-//           });
-
-//           uploadedFiles.push({
-//             fileName: file.originalname,
-//             imageUrl: originalRes.Location,
-//             thumbnailUrl: thumbRes.Location,
-//           });
-//         }
-
-//         // ================= VIDEO =================
-//         else if (isVideo) {
-//           const clipName = `clip_${fileName}.mp4`;
-//           clipPath = path.join(TEMP_DIR, clipName);
-
-//           await generateVideoPreview(filePath, clipPath, 3);
-
-//           const videoRes = await uploadFileToS3(
-//             filePath,
-//             fileName,
-//             folderPath,
-//             phoneNo,
-//             file.mimetype
-//           );
-
-//           const clipRes = await uploadFileToS3(
-//             clipPath,
-//             clipName,
-//             folderPath,
-//             phoneNo,
-//             "video/mp4"
-//           );
-
-//           await WebLink.create({
-//             orderId: vendorId ? vendorId.toString() : folderName,
-//             orderById: customerId,
-//             orderByName: phoneNo || "",
-//             type: "video",
-//             originalUrl: videoRes.Location,
-//             originalKey: videoRes.Key,
-//             thumbnailImageUrl: null,
-//             thumbnailKey: null,
-//             videoClipUrl: clipRes.Location,
-//             videoClipKey: clipRes.Key,
-//             mainFolderId,
-//           });
-
-//           uploadedFiles.push({
-//             fileName: file.originalname,
-//             videoUrl: videoRes.Location,
-//             clipUrl: clipRes.Location,
-//           });
-//         }
-
-//         else {
-//           uploadedFiles.push({
-//             fileName: file.originalname,
-//             error: "Unsupported file type",
-//           });
-//         }
-
-//       } catch (error) {
-//         console.error(`Error processing ${fileName}:`, error.message);
-//         uploadedFiles.push({
-//           fileName: file.originalname,
-//           error: error.message,
-//         });
-//       } finally {
-        
-//         const paths = [filePath, thumbPath, clipPath];
-
-//         for (const p of paths) {
-//           if (!p) continue;
-
-//           try {
-//             await fsPromises.unlink(p);
-//             console.log("Deleted:", p);
-//           } catch (err) {
-//             if (err.code !== "ENOENT") {
-//               console.error("Delete failed:", p, err.message);
-//             }
-//           }
-//         }
-//       }
-//     }
-
-//     return res.status(201).json({
-//       message: "Files uploaded successfully.",
-//       files: uploadedFiles,
-//     });
-
-//   } catch (error) {
-//     console.error("Upload error:", error);
-//     return res.status(500).json({
-//       message: "Server error",
-//       error: error.message,
-//     });
-//   }
-// });
-
-// router.post("/upload", upload.array("files"), async (req, res) => {
-//   try {
-//     const {
-//       folderName,
-//       customerId,
-//       vendorId,
-//       phoneNo,
-//       isWeblink = true,
-//       fileId,
-//     } = req.body;
-
-//     // if (!fileId) {
-//     //   return res.status(400).json({ message: "fileId is required" });
-//     // }
-
-//     if (!folderName || !customerId) {
-//       return res
-//         .status(400)
-//         .json({ message: "Folder Name and Customer ID are required." });
-//     }
-
-//     const folder = await Folder.findOne({ folderName }).lean();
-//     if (!folder) {
-//       return res.status(404).json({ message: "Folder not found" });
-//     }
-
-//     const mainFolderId = folder._id;
-
-//     if (!req.files || req.files.length === 0) {
-//       return res.status(400).json({ message: "No files were uploaded." });
-//     }
-
-//     const folderPath = isWeblink
-//       ? folderName
-//       : vendorId
-//         ? `${folderName}_${customerId}_${vendorId}`
-//         : `${folderName}_${customerId}`;
-
-//     const uploadedFiles = [];
-
-//     // ================= LOOP START =================
-//     for (const file of req.files) {
-//       // const uniqueFileId = `${fileId}_${file.filename}`; // ✅ UNIQUE ID PER FILE
-//       const uniqueFileId = fileId;
-//       const filePath = file.path;
-//       const fileName = file.filename;
-//       const isImage = file.mimetype.startsWith("image/");
-//       const isVideo = file.mimetype.startsWith("video/");
-
-//       let thumbPath;
-//       let clipPath;
-//       let finalUpdateData = {};
-
-//       try {
-//         // ================= CHECK EXISTING =================
-//         let existing = await WebLink.findOne({ fileId: uniqueFileId });
-
-//         if (existing) {
-//           if (existing.status === "done") {
-//             uploadedFiles.push(existing);
-//             continue;
-//           }
-
-//           if (existing.status === "uploading") {
-//             uploadedFiles.push(existing);
-//             continue;
-//           }
-
-//           if (existing.status === "failed") {
-//             await WebLink.updateOne(
-//               { fileId: uniqueFileId },
-//               {
-//                 status: "uploading",
-//                 $inc: { retryCount: 1 },
-//               },
-//             );
-//           }
-//         } else {
-//           await WebLink.create({
-//             fileId: uniqueFileId,
-//             orderId: vendorId ? vendorId.toString() : folderName,
-//             orderById: customerId,
-//             orderByName: phoneNo || "",
-//             status: "uploading",
-//             mainFolderId,
-//             type: isVideo ? "video" : "image",
-//             originalUrl: "pending",
-//             originalKey: `pending_${uniqueFileId}_${Date.now()}`,
-//           });
-//         }
-
-//         // ================= IMAGE =================
-//         if (isImage) {
-//           const thumbName = `thumb_${fileName}.webp`;
-//           thumbPath = path.join(TEMP_DIR, thumbName);
-
-//           await generateThumbnail(filePath, thumbPath);
-
-//           const originalRes = await uploadFileToS3(
-//             filePath,
-//             fileName,
-//             folderPath,
-//             phoneNo,
-//             file.mimetype,
-//           );
-
-//           const thumbRes = await uploadFileToS3(
-//             thumbPath,
-//             thumbName,
-//             folderPath,
-//             phoneNo,
-//             "image/webp",
-//           );
-
-//           finalUpdateData = {
-//             type: "image",
-//             originalUrl: originalRes.Location,
-//             originalKey: originalRes.Key,
-//             thumbnailImageUrl: thumbRes.Location,
-//             thumbnailKey: thumbRes.Key,
-//           };
-//         }
-
-//         // ================= VIDEO =================
-//         else if (isVideo) {
-//           const clipName = `clip_${fileName}.mp4`;
-//           clipPath = path.join(TEMP_DIR, clipName);
-
-//           await generateVideoPreview(filePath, clipPath, 3);
-
-//           const videoRes = await uploadFileToS3(
-//             filePath,
-//             fileName,
-//             folderPath,
-//             phoneNo,
-//             file.mimetype,
-//           );
-
-//           const clipRes = await uploadFileToS3(
-//             clipPath,
-//             clipName,
-//             folderPath,
-//             phoneNo,
-//             "video/mp4",
-//           );
-
-//           finalUpdateData = {
-//             type: "video",
-//             originalUrl: videoRes.Location,
-//             originalKey: videoRes.Key,
-//             videoClipUrl: clipRes.Location,
-//             videoClipKey: clipRes.Key,
-//           };
-//         } else {
-//           throw new Error("Unsupported file type");
-//         }
-
-//         // ================= UPDATE DONE =================
-//         const updatedDoc = await WebLink.findOneAndUpdate(
-//           { fileId: uniqueFileId }, // ✅ FIXED
-//           {
-//             ...finalUpdateData,
-//             status: "done",
-//           },
-//           { new: true },
-//         );
-
-//         uploadedFiles.push(updatedDoc);
-//       } catch (error) {
-//         console.error(`Error processing ${fileName}:`, error.message);
-
-//         // ================= UPDATE FAILED =================
-//         await WebLink.updateOne(
-//           { fileId: uniqueFileId }, // ✅ FIXED
-//           { status: "failed" },
-//         );
-
-//         uploadedFiles.push({
-//           fileName: file.originalname,
-//           error: error.message,
-//         });
-//       } finally {
-//         // ================= CLEANUP =================
-//         const paths = [filePath, thumbPath, clipPath];
-
-//         for (const p of paths) {
-//           if (p) {
-//             try {
-//               await fsPromises.unlink(p);
-//             } catch (err) {}
-//           }
-//         }
-//       }
-//     }
-
-//     return res.status(201).json({
-//       message: "Processing complete",
-//       files: uploadedFiles,
-//     });
-//   } catch (error) {
-//     console.error("Upload error:", error);
-//     return res.status(500).json({
-//       message: "Server error",
-//       error: error.message,
-//     });
-//   }
-// });
 
 router.post("/upload", upload.array("files"), async (req, res) => {
   try {
@@ -1091,5 +705,194 @@ router.put(
     }
   }
 );
+
+
+// AWS S3 Client
+const s3Client = new S3Client({
+  region: "eu-north-1",
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
+
+const BUCKET_NAME = "photography-hora";
+
+router.post("/clean-original-images-by-folder", async (req, res) => {
+  const { mainFolderId } = req.body;
+
+  if (!mainFolderId) {
+    return res.status(400).json({
+      success: false,
+      message: "mainFolderId is required",
+    });
+  }
+
+  try {
+    const items = await Weblink.find({
+      mainFolderId,
+      type: "image",
+    });
+
+    if (!items.length) {
+      return res.status(404).json({
+        success: false,
+        message: "No images found for this mainFolderId",
+      });
+    }
+
+    let processedCount = 0;
+    let failedCount = 0;
+    let skippedCount = 0;
+
+    for (const item of items) {
+      try {
+        const oldOriginalKey = item.originalKey;
+
+        if (!oldOriginalKey) {
+          skippedCount++;
+          continue;
+        }
+
+        // Already converted
+        if (oldOriginalKey.includes("/2880_")) {
+          skippedCount++;
+          continue;
+        }
+
+        console.log(`Processing: ${oldOriginalKey}`);
+
+        // Delete original image from S3
+        try {
+          await s3Client.send(
+            new DeleteObjectCommand({
+              Bucket: BUCKET_NAME,
+              Key: oldOriginalKey,
+            })
+          );
+
+          console.log(`Deleted: ${oldOriginalKey}`);
+        } catch (deleteError) {
+          console.error(
+            `Failed to delete ${oldOriginalKey}:`,
+            deleteError.message
+          );
+        }
+
+        // Generate 2880 key
+        const keyParts = oldOriginalKey.split("/");
+
+        if (keyParts.length < 2) {
+          failedCount++;
+          continue;
+        }
+
+        const folderPrefix = keyParts[0];
+        const fileNameWithExt = keyParts[keyParts.length - 1];
+
+        const lastDotIndex = fileNameWithExt.lastIndexOf(".");
+
+        if (lastDotIndex === -1) {
+          failedCount++;
+          continue;
+        }
+
+        const baseName = fileNameWithExt.substring(0, lastDotIndex);
+
+        const newOriginalKey = `${folderPrefix}/2880_${baseName}.jpeg`;
+
+        // Update DB
+        item.originalKey = newOriginalKey;
+
+        // Directly use existing DB value
+          item.originalUrl = item.imageUrl2880;
+
+        await item.save();
+
+        processedCount++;
+
+        console.log(
+          `Updated: ${item._id}
+Old Key: ${oldOriginalKey}
+New Key: ${newOriginalKey}
+Original URL: ${item.originalUrl}`
+        );
+      } catch (singleFileError) {
+        console.error(
+          `Error processing file ${item._id}:`,
+          singleFileError
+        );
+        failedCount++;
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Bulk processing completed",
+      stats: {
+        totalFound: items.length,
+        successfullyProcessed: processedCount,
+        failed: failedCount,
+        skipped: skippedCount,
+      },
+    });
+  } catch (error) {
+    console.error("Bulk update error:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+router.post("/fix-original-url-by-folder", async (req, res) => {
+  const { mainFolderId } = req.body;
+
+  if (!mainFolderId) {
+    return res.status(400).json({
+      success: false,
+      message: "mainFolderId is required",
+    });
+  }
+
+  try {
+    const images = await Weblink.find({
+      mainFolderId,
+      type: "image",
+    });
+
+    let updated = 0;
+
+    for (const image of images) {
+      // originalKey se 2880 URL banao
+      const originalUrl = `https://photography-hora.s3.eu-north-1.amazonaws.com/${image.originalKey}`;
+
+      await Weblink.updateOne(
+        { _id: image._id },
+        {
+          $set: {
+            originalUrl: originalUrl,
+          },
+        }
+      );
+
+      updated++;
+    }
+
+    return res.status(200).json({
+      success: true,
+      totalFound: images.length,
+      updated,
+    });
+  } catch (error) {
+    console.error("Fix originalUrl error:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
 
 module.exports = router;
