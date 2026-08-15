@@ -3,14 +3,20 @@ const router = express.Router();
 const { handleDriveFolderUpload, uploadSingleImage } = require("../services/drive.service");
 const Folder = require("../models/folder");
 const fs = require("fs");
-const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVideoDuration } = require("../utils/auth.util");
+const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVideoDuration, resizeImage } = require("../utils/auth.util");
 const multer = require("multer");
 const path = require("path");
 const WebLink = require("../models/weblink-images")
 const Weblink = require("../models/weblink-images")
 const fsPromises = require("fs").promises;
 const AWS = require("aws-sdk");
-const { S3Client, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const os = require("os");
+const {
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+  DeleteObjectCommand
+} = require("@aws-sdk/client-s3");
 
 
 
@@ -706,8 +712,6 @@ router.put(
   }
 );
 
-
-// AWS S3 Client
 const s3Client = new S3Client({
   region: "eu-north-1",
   credentials: {
@@ -718,7 +722,17 @@ const s3Client = new S3Client({
 
 const BUCKET_NAME = "photography-hora";
 
-router.post("/clean-original-images-by-folder", async (req, res) => {
+// Helper: Stream to Buffer
+const streamToBuffer = async (stream) => {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    stream.on("data", (chunk) => chunks.push(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(Buffer.concat(chunks)));
+  });
+};
+
+router.post("/resize-and-clean-original-images", async (req, res) => {
   const { mainFolderId } = req.body;
 
   if (!mainFolderId) {
@@ -746,50 +760,48 @@ router.post("/clean-original-images-by-folder", async (req, res) => {
     let skippedCount = 0;
 
     for (const item of items) {
+      let inputFilePath = null;
+      let outputFilePath = null;
+
       try {
         const oldOriginalKey = item.originalKey;
 
-        if (!oldOriginalKey) {
-          skippedCount++;
-          continue;
-        }
-
-        // Already converted
-        if (oldOriginalKey.includes("/2880_")) {
+        // Skip missing key or already converted images
+        if (!oldOriginalKey || oldOriginalKey.includes("/2880_")) {
           skippedCount++;
           continue;
         }
 
         console.log(`Processing: ${oldOriginalKey}`);
 
-        // Delete original image from S3
-        try {
-          await s3Client.send(
-            new DeleteObjectCommand({
-              Bucket: BUCKET_NAME,
-              Key: oldOriginalKey,
-            })
-          );
+ 
+        const getObjResponse = await s3Client.send(
+          new GetObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: oldOriginalKey,
+          })
+        );
 
-          console.log(`Deleted: ${oldOriginalKey}`);
-        } catch (deleteError) {
-          console.error(
-            `Failed to delete ${oldOriginalKey}:`,
-            deleteError.message
-          );
-        }
+        const imageBuffer = await streamToBuffer(getObjResponse.Body);
 
-        // Generate 2880 key
+        const tempId = item._id.toString();
+        inputFilePath = path.join(os.tmpdir(), `input_${tempId}.jpg`);
+        outputFilePath = path.join(os.tmpdir(), `output_${tempId}.jpg`);
+
+        fs.writeFileSync(inputFilePath, imageBuffer);
+
+       
+        await resizeImage(inputFilePath, outputFilePath, 2880);
+
+        
         const keyParts = oldOriginalKey.split("/");
-
         if (keyParts.length < 2) {
           failedCount++;
           continue;
         }
 
-        const folderPrefix = keyParts[0];
+        const folderPrefix = keyParts.slice(0, -1).join("/");
         const fileNameWithExt = keyParts[keyParts.length - 1];
-
         const lastDotIndex = fileNameWithExt.lastIndexOf(".");
 
         if (lastDotIndex === -1) {
@@ -798,37 +810,53 @@ router.post("/clean-original-images-by-folder", async (req, res) => {
         }
 
         const baseName = fileNameWithExt.substring(0, lastDotIndex);
-
         const newOriginalKey = `${folderPrefix}/2880_${baseName}.jpeg`;
 
-        // Update DB
+        // 4. Resized image S3 for upload 
+        const resizedImageBuffer = fs.readFileSync(outputFilePath);
+        await s3Client.send(
+          new PutObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: newOriginalKey,
+            Body: resizedImageBuffer,
+            ContentType: "image/jpeg",
+          })
+        );
+
+        // 5. s3 delete original
+        await s3Client.send(
+          new DeleteObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: oldOriginalKey,
+          })
+        );
+
+        // 6. DB fields update 
+        const newOriginalUrl = `https://${BUCKET_NAME}.s3.eu-north-1.amazonaws.com/${newOriginalKey}`;
+
         item.originalKey = newOriginalKey;
-
-        // Directly use existing DB value
-          item.originalUrl = item.imageUrl2880;
-
+        item.originalUrl = newOriginalUrl;
         await item.save();
 
         processedCount++;
-
-        console.log(
-          `Updated: ${item._id}
-Old Key: ${oldOriginalKey}
-New Key: ${newOriginalKey}
-Original URL: ${item.originalUrl}`
-        );
+        console.log(`Successfully updated item ${item._id} to 2880 version.`);
       } catch (singleFileError) {
-        console.error(
-          `Error processing file ${item._id}:`,
-          singleFileError
-        );
+        console.error(`Error processing file ${item._id}:`, singleFileError.message);
         failedCount++;
+      } finally {
+        // Disk memory cleanup
+        if (inputFilePath && fs.existsSync(inputFilePath)) {
+          fs.unlinkSync(inputFilePath);
+        }
+        if (outputFilePath && fs.existsSync(outputFilePath)) {
+          fs.unlinkSync(outputFilePath);
+        }
       }
     }
 
     return res.status(200).json({
       success: true,
-      message: "Bulk processing completed",
+      message: "Resize, upload, clean-up & DB update process completed",
       stats: {
         totalFound: items.length,
         successfullyProcessed: processedCount,
@@ -837,8 +865,7 @@ Original URL: ${item.originalUrl}`
       },
     });
   } catch (error) {
-    console.error("Bulk update error:", error);
-
+    console.error("Bulk process error:", error);
     return res.status(500).json({
       success: false,
       error: error.message,
@@ -846,53 +873,5 @@ Original URL: ${item.originalUrl}`
   }
 });
 
-router.post("/fix-original-url-by-folder", async (req, res) => {
-  const { mainFolderId } = req.body;
-
-  if (!mainFolderId) {
-    return res.status(400).json({
-      success: false,
-      message: "mainFolderId is required",
-    });
-  }
-
-  try {
-    const images = await Weblink.find({
-      mainFolderId,
-      type: "image",
-    });
-
-    let updated = 0;
-
-    for (const image of images) {
-      // originalKey se 2880 URL banao
-      const originalUrl = `https://photography-hora.s3.eu-north-1.amazonaws.com/${image.originalKey}`;
-
-      await Weblink.updateOne(
-        { _id: image._id },
-        {
-          $set: {
-            originalUrl: originalUrl,
-          },
-        }
-      );
-
-      updated++;
-    }
-
-    return res.status(200).json({
-      success: true,
-      totalFound: images.length,
-      updated,
-    });
-  } catch (error) {
-    console.error("Fix originalUrl error:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
 
 module.exports = router;
