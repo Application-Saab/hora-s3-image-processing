@@ -141,6 +141,9 @@ async function handleDriveFolderUpload(
 
   let failCount = 0;
 
+  let uploadedImageCount = 0;
+  let faceApiBatchCount = 0;
+
   console.log("mainFolderId in the handler", mainFolderId)
   console.log("START PROCESSING FIRST ONE FOR THIS ORDER II ------------>>>>>>>>>>", orderId);
   const folderId = getFolderIdFromUrl(folderUrl);
@@ -364,6 +367,36 @@ async function handleDriveFolderUpload(
             throw error;
           }
           console.log("STEP 8 DB INSERT DONE", file.name);
+          uploadedImageCount++;
+
+
+          if (uploadedImageCount % 20 === 0) {
+            faceApiBatchCount++;
+
+            try {
+              console.log(`Calling Face API for batch ${faceApiBatchCount}`);
+
+              const formData = new FormData();
+              formData.append("folder_name", folderName);
+              formData.append("folderId", mainFolderId);
+              formData.append("userId", customerId);
+              formData.append("isLastBatch", false);
+
+              await axios.post(
+                "https://horaservices.com/face-api/count-unique-persons",
+                formData,
+                {
+                  headers: formData.getHeaders
+                    ? formData.getHeaders()
+                    : {
+                      "Content-Type": "multipart/form-data",
+                    },
+                }
+              );
+            } catch (err) {
+              console.error("Face API batch error", err.message);
+            }
+          }
 
           if (filePath && fs.existsSync(filePath)) {
             await deleteFileWithRetry(filePath);
@@ -695,6 +728,7 @@ async function handleDriveFolderUpload(
       formData.append("folder_name", folderName);
       formData.append("folderId", mainFolderId);
       formData.append("userId", customerId);
+      formData.append("isLastBatch", true);
 
       const faceResponse = await axios.post(
         "https://horaservices.com/face-api/count-unique-persons",
