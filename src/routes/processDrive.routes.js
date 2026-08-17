@@ -3,12 +3,21 @@ const router = express.Router();
 const { handleDriveFolderUpload, uploadSingleImage } = require("../services/drive.service");
 const Folder = require("../models/folder");
 const fs = require("fs");
-const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVideoDuration } = require("../utils/auth.util");
+const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVideoDuration, resizeImage } = require("../utils/auth.util");
 const multer = require("multer");
 const path = require("path");
 const WebLink = require("../models/weblink-images")
+const Weblink = require("../models/weblink-images")
 const fsPromises = require("fs").promises;
 const AWS = require("aws-sdk");
+const os = require("os");
+const {
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+  DeleteObjectCommand
+} = require("@aws-sdk/client-s3");
+
 
 
 const s3 = new AWS.S3({
@@ -336,6 +345,7 @@ router.post("/upload-multiple", upload.array("images"), async (req, res) => {
     return res.status(500).json({ message: err.message });
   }
 });
+
 
 //admin panel create folder
 // router.post("/upload", upload.array("files"), async (req, res) => {
@@ -726,6 +736,7 @@ router.post("/upload-multiple", upload.array("images"), async (req, res) => {
 //   }
 // });
 
+
 router.post("/upload", upload.array("files"), async (req, res) => {
   try {
     const {
@@ -1091,5 +1102,167 @@ router.put(
     }
   }
 );
+
+const s3Client = new S3Client({
+  region: "eu-north-1",
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
+
+const BUCKET_NAME = "photography-hora";
+
+// Helper: Stream to Buffer
+const streamToBuffer = async (stream) => {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    stream.on("data", (chunk) => chunks.push(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(Buffer.concat(chunks)));
+  });
+};
+
+router.post("/resize-and-clean-original-images", async (req, res) => {
+  const { mainFolderId } = req.body;
+
+  if (!mainFolderId) {
+    return res.status(400).json({
+      success: false,
+      message: "mainFolderId is required",
+    });
+  }
+
+  try {
+    const items = await Weblink.find({
+      mainFolderId,
+      type: "image",
+    });
+
+    if (!items.length) {
+      return res.status(404).json({
+        success: false,
+        message: "No images found for this mainFolderId",
+      });
+    }
+
+    let processedCount = 0;
+    let failedCount = 0;
+    let skippedCount = 0;
+
+    for (const item of items) {
+      let inputFilePath = null;
+      let outputFilePath = null;
+
+      try {
+        const oldOriginalKey = item.originalKey;
+
+        // Skip missing key or already converted images
+        if (!oldOriginalKey || oldOriginalKey.includes("/2880_")) {
+          skippedCount++;
+          continue;
+        }
+
+        console.log(`Processing: ${oldOriginalKey}`);
+
+ 
+        const getObjResponse = await s3Client.send(
+          new GetObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: oldOriginalKey,
+          })
+        );
+
+        const imageBuffer = await streamToBuffer(getObjResponse.Body);
+
+        const tempId = item._id.toString();
+        inputFilePath = path.join(os.tmpdir(), `input_${tempId}.jpg`);
+        outputFilePath = path.join(os.tmpdir(), `output_${tempId}.jpg`);
+
+        fs.writeFileSync(inputFilePath, imageBuffer);
+
+       
+        await resizeImage(inputFilePath, outputFilePath, 2880);
+
+        
+        const keyParts = oldOriginalKey.split("/");
+        if (keyParts.length < 2) {
+          failedCount++;
+          continue;
+        }
+
+        const folderPrefix = keyParts.slice(0, -1).join("/");
+        const fileNameWithExt = keyParts[keyParts.length - 1];
+        const lastDotIndex = fileNameWithExt.lastIndexOf(".");
+
+        if (lastDotIndex === -1) {
+          failedCount++;
+          continue;
+        }
+
+        const baseName = fileNameWithExt.substring(0, lastDotIndex);
+        const newOriginalKey = `${folderPrefix}/2880_${baseName}.jpeg`;
+
+        // 4. Resized image S3 for upload 
+        const resizedImageBuffer = fs.readFileSync(outputFilePath);
+        await s3Client.send(
+          new PutObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: newOriginalKey,
+            Body: resizedImageBuffer,
+            ContentType: "image/jpeg",
+          })
+        );
+
+        // 5. s3 delete original
+        await s3Client.send(
+          new DeleteObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: oldOriginalKey,
+          })
+        );
+
+        // 6. DB fields update 
+        const newOriginalUrl = `https://${BUCKET_NAME}.s3.eu-north-1.amazonaws.com/${newOriginalKey}`;
+
+        item.originalKey = newOriginalKey;
+        item.originalUrl = newOriginalUrl;
+        await item.save();
+
+        processedCount++;
+        console.log(`Successfully updated item ${item._id} to 2880 version.`);
+      } catch (singleFileError) {
+        console.error(`Error processing file ${item._id}:`, singleFileError.message);
+        failedCount++;
+      } finally {
+        // Disk memory cleanup
+        if (inputFilePath && fs.existsSync(inputFilePath)) {
+          fs.unlinkSync(inputFilePath);
+        }
+        if (outputFilePath && fs.existsSync(outputFilePath)) {
+          fs.unlinkSync(outputFilePath);
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Resize, upload, clean-up & DB update process completed",
+      stats: {
+        totalFound: items.length,
+        successfullyProcessed: processedCount,
+        failed: failedCount,
+        skipped: skippedCount,
+      },
+    });
+  } catch (error) {
+    console.error("Bulk process error:", error);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 
 module.exports = router;
