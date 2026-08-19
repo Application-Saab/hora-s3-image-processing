@@ -1145,11 +1145,18 @@ router.post("/resize-and-clean-original-images", async (req, res) => {
         message: "No images found for this mainFolderId",
       });
     }
+    res.status(200).json({
+      success: true,
+      message: "Image resize process started in background",
+      mainFolderId,
+      totalImages: items.length,
+    });
 
+    (async () => {
     let processedCount = 0;
     let failedCount = 0;
     let skippedCount = 0;
-
+      try {
     for (const item of items) {
       let inputFilePath = null;
       let outputFilePath = null;
@@ -1244,17 +1251,17 @@ router.post("/resize-and-clean-original-images", async (req, res) => {
         }
       }
     }
-
-    return res.status(200).json({
-      success: true,
-      message: "Resize, upload, clean-up & DB update process completed",
-      stats: {
+      } catch (error) {
+        console.error("Background process error:", error);
+      }
+      console.log("Process completed", {
         totalFound: items.length,
-        successfullyProcessed: processedCount,
-        failed: failedCount,
-        skipped: skippedCount,
-      },
-    });
+        processedCount,
+        failedCount,
+        skippedCount,
+      });
+    })();
+
   } catch (error) {
     console.error("Bulk process error:", error);
     return res.status(500).json({
