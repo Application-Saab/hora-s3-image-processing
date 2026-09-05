@@ -5,6 +5,7 @@ const WebLink = require("../models/weblink-images.js");
 const OrderModel = require("../models/order.js")
 const { sendWhatsApp } = require('../utils/whatsappservice.js');
 const FolderModel = require("../models/folder.js");
+const FormData = require("form-data");
 
 const {
   generateThumbnail,
@@ -125,6 +126,60 @@ async function getDriveCountSequentially(folderId, orderId) {
 
   });
 
+}
+
+async function detectImageOrientation(filePath) {
+  try {
+    console.log(
+      "🤖 ORIENTATION API START:",
+      filePath
+    );
+
+    const formData = new FormData();
+
+    formData.append(
+      "file",
+      fs.createReadStream(filePath)
+    );
+
+    const response = await axios.post(
+      "http://localhost:8000/detect-orientation",
+      formData,
+      {
+        headers: formData.getHeaders(),
+
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+
+        timeout: 120000
+      }
+    );
+
+    console.log(
+      "🤖 ORIENTATION API RESPONSE:",
+      response.data
+    );
+
+    return response.data;
+
+  } catch (error) {
+
+    console.error(
+      "❌ ORIENTATION API ERROR:",
+      error?.response?.data ||
+      error.message
+    );
+
+    // Python fail hone par image ko rotate
+    // nahi karenge
+    return {
+      success: false,
+      rotation: 0,
+      confidence: 0,
+      autoRotated: false,
+      reason: "orientation_api_failed"
+    };
+  }
 }
 
 async function handleDriveFolderUpload(
@@ -284,19 +339,73 @@ async function handleDriveFolderUpload(
           const fileName2880 = `2880_${driveFileId}.jpeg`;
           const thumbFileName = `thumb_${driveFileId}.webp`;
 
-          console.log("STEP 3 GENERATING ALL IMAGE VARIATIONS START", file.name);
+          console.log(
+            "STEP 3 IMAGE ORIENTATION DETECTION START:",
+            file.name
+          );
 
-          // 1. Generate Thumbnail (WebP)
-          const genThumb = generateThumbnail(filePath, thumbnailPath);
+          // ==========================================
+          // PYTHON ORIENTATION DETECTION
+          // ==========================================
 
-          const gen2880 = resizeImage(filePath, path2880, 2880);
+          const orientationResult =
+            await detectImageOrientation(filePath);
 
-          // Run image processing in parallel
-          await Promise.all([genThumb, gen2880]);
+          const rotation =
+            Number(orientationResult?.rotation || 0);
 
-          console.log("STEP 4 VARIATIONS GENERATED SUCCESSFULLY", file.name);
+          console.log("==============================================");
+          console.log("IMAGE:", file.name);
+          console.log(
+            "PYTHON ROTATION:",
+            rotation
+          );
+          console.log(
+            "PYTHON CONFIDENCE:",
+            orientationResult?.confidence
+          );
+          console.log(
+            "PYTHON FACES:",
+            orientationResult?.faces
+          );
+          console.log(
+            "PYTHON REASON:",
+            orientationResult?.reason
+          );
+          console.log("==============================================");
 
-          console.log("STEP 5 S3 UPLOAD START FOR ALL 4 VARIATIONS", file.name);
+
+          // ==========================================
+          // GENERATE CORRECTED IMAGE VARIATIONS
+          // ==========================================
+
+          console.log(
+            "STEP 4 GENERATING IMAGE VARIATIONS:",
+            file.name
+          );
+
+          const genThumb = generateThumbnail(
+            filePath,
+            thumbnailPath,
+            rotation
+          );
+
+          const gen2880 = resizeImage(
+            filePath,
+            path2880,
+            2880,
+            rotation
+          );
+
+          await Promise.all([
+            genThumb,
+            gen2880
+          ]);
+
+          console.log(
+            "STEP 5 VARIATIONS GENERATED SUCCESSFULLY:",
+            file.name
+          );
 
 
 
@@ -383,7 +492,7 @@ async function handleDriveFolderUpload(
               formData.append("isLastBatch", false);
 
               await axios.post(
-                "https://horaservices.com/face-api/count-unique-persons",
+                "https://22.com/face-api/count-unique-persons",
                 formData,
                 {
                   headers: formData.getHeaders
