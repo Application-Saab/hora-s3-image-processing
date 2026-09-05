@@ -1271,5 +1271,63 @@ router.post("/resize-and-clean-original-images", async (req, res) => {
   }
 });
 
+const axios = require("axios");
+
+router.post("/resize-multiple-folders", async (req, res) => {
+  const { mainFolderIds } = req.body;
+
+  if (!Array.isArray(mainFolderIds) || mainFolderIds.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: "mainFolderIds array is required",
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    message: "Bulk processing started in background",
+    totalFolders: mainFolderIds.length,
+  });
+
+  (async () => {
+    const results = [];
+
+    for (const mainFolderId of mainFolderIds) {
+      try {
+        console.log(`Starting folder: ${mainFolderId}`);
+
+        const response = await axios.post(
+          "https://horaservices.com/media-api/resize-and-clean-original-images",
+          {
+            mainFolderId,
+          }
+        );
+
+        results.push({
+          mainFolderId,
+          status: "success",
+          response: response.data,
+        });
+
+        console.log(`Completed folder: ${mainFolderId}`);
+      } catch (error) {
+        console.error(`Failed folder: ${mainFolderId}`, error.message);
+
+        results.push({
+          mainFolderId,
+          status: "failed",
+          error: error.message,
+        });
+      }
+
+      // Optional 2 sec delay between folders
+      // await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    console.log("All folders completed");
+    console.log(results);
+  })();
+});
+
 
 module.exports = router;
