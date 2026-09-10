@@ -143,7 +143,7 @@ async function detectImageOrientation(filePath) {
     );
 
     const response = await axios.post(
-      "http://localhost:8000/detect-orientation",
+      "https://horaservices.com/face-api/detect-orientation",
       formData,
       {
         headers: formData.getHeaders(),
@@ -169,9 +169,6 @@ async function detectImageOrientation(filePath) {
       error?.response?.data ||
       error.message
     );
-
-    // Python fail hone par image ko rotate
-    // nahi karenge
     return {
       success: false,
       rotation: 0,
@@ -273,7 +270,6 @@ async function handleDriveFolderUpload(
 
 
       // retry failed file
-      // retry failed file
       if (existingFile?.status === "failed") {
 
         console.log(`🔄 RETRYING FAILED FILE: ${file.id}`);
@@ -344,10 +340,6 @@ async function handleDriveFolderUpload(
             file.name
           );
 
-          // ==========================================
-          // PYTHON ORIENTATION DETECTION
-          // ==========================================
-
           const orientationResult =
             await detectImageOrientation(filePath);
 
@@ -373,11 +365,6 @@ async function handleDriveFolderUpload(
             orientationResult?.reason
           );
           console.log("==============================================");
-
-
-          // ==========================================
-          // GENERATE CORRECTED IMAGE VARIATIONS
-          // ==========================================
 
           console.log(
             "STEP 4 GENERATING IMAGE VARIATIONS:",
@@ -492,7 +479,7 @@ async function handleDriveFolderUpload(
               formData.append("isLastBatch", false);
 
               await axios.post(
-                "https://22.com/face-api/count-unique-persons",
+                "https://horaservices.com/face-api/count-unique-persons",
                 formData,
                 {
                   headers: formData.getHeaders

@@ -118,18 +118,12 @@ const generateThumbnail = async (
   rotation = 0
 ) => {
   if (inputPath && fs.existsSync(inputPath)) {
-    console.log(
-      "inputPath =====",
-      inputPath,
-      "EXISTS OR NOT ",
-      fs.existsSync(inputPath)
-    );
+    console.log("inputPath =====",inputPath,"EXISTS OR NOT ",fs.existsSync(inputPath));
   }
 
   try {
     let image = sharp(inputPath);
 
-    // Python orientation result ke according rotate
     if ([90, 180, 270].includes(rotation)) {
       console.log(
         `🔄 THUMBNAIL ROTATION APPLYING: ${rotation}°`
@@ -137,7 +131,6 @@ const generateThumbnail = async (
 
       image = image.rotate(rotation);
     } else {
-      // Sirf EXIF orientation handle karega
       image = image.rotate();
     }
 
@@ -169,7 +162,6 @@ const generateThumbnail = async (
 
 
 
-// Helper function to resize image maintaining aspect ratio
 async function resizeImage(
   inputPath,
   outputPath,
@@ -190,7 +182,6 @@ async function resizeImage(
 
   let processedImage = image;
 
-  // Python se detected rotation apply karo
   if ([90, 180, 270].includes(rotation)) {
     console.log(
       `🔄 2880 IMAGE ROTATION APPLYING: ${rotation}°`
@@ -198,8 +189,6 @@ async function resizeImage(
 
     processedImage = processedImage.rotate(rotation);
   } else {
-    // Agar Python ne rotation nahi diya,
-    // to normal EXIF orientation handle karo
     processedImage = processedImage.rotate();
   }
 
@@ -214,7 +203,6 @@ async function resizeImage(
 
 const TEMP_DIR = path.join(process.cwd(), "tempUploads");
 
-// ensure temp folder exists
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
