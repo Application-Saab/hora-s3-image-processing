@@ -112,41 +112,90 @@ const deleteFileWithRetry = async (filePath, retries = 3, delay = 100) => {
 // =======================
 // Generate Thumbnail
 // =======================
-const generateThumbnail = async (inputPath, outputPath) => {
-  if (inputPath && fs.existsSync(inputPath)){
-    console.log("inputPath =====", inputPath, "EXISTS OR NOT ", fs.existsSync(inputPath))
+const generateThumbnail = async (
+  inputPath,
+  outputPath,
+  rotation = 0
+) => {
+  if (inputPath && fs.existsSync(inputPath)) {
+    console.log("inputPath =====",inputPath,"EXISTS OR NOT ",fs.existsSync(inputPath));
   }
+
   try {
-    // Resize + compress
-    const outputBuffer = await sharp(inputPath)
-      .resize({ width: 1080, withoutEnlargement: true })
-      .rotate()
+    let image = sharp(inputPath);
+
+    if ([90, 180, 270].includes(rotation)) {
+      console.log(
+        `🔄 THUMBNAIL ROTATION APPLYING: ${rotation}°`
+      );
+
+      image = image.rotate(rotation);
+    } else {
+      image = image.rotate();
+    }
+
+    const outputBuffer = await image
+      .resize({
+        width: 1080,
+        withoutEnlargement: true
+      })
       .webp({ quality: 80 })
       .withMetadata({ orientation: 1 })
       .toBuffer();
 
-    // Save thumbnail
     await fsPromise.writeFile(outputPath, outputBuffer);
 
     console.log(
       `Thumbnail saved at: ${outputPath} (Size: ${(
         outputBuffer.length / 1024
-      ).toFixed(2)} KB)`,
+      ).toFixed(2)} KB)`
     );
   } catch (error) {
-    console.error("Error generating thumbnail:", error);
+    console.error(
+      "Error generating thumbnail:",
+      error
+    );
+
     throw error;
   }
 };
 
 
 
-// Helper function to resize image maintaining aspect ratio
-async function resizeImage(inputPath, outputPath, targetWidth) {
-  await sharp(inputPath)
+async function resizeImage(
+  inputPath,
+  outputPath,
+  targetWidth,
+  rotation = 0
+) {
+  const image = sharp(inputPath);
+
+  const metadata = await image.metadata();
+
+  console.log("IMAGE METADATA =================");
+  console.log({
+    width: metadata.width,
+    height: metadata.height,
+    orientation: metadata.orientation,
+    format: metadata.format
+  });
+
+  let processedImage = image;
+
+  if ([90, 180, 270].includes(rotation)) {
+    console.log(
+      `🔄 2880 IMAGE ROTATION APPLYING: ${rotation}°`
+    );
+
+    processedImage = processedImage.rotate(rotation);
+  } else {
+    processedImage = processedImage.rotate();
+  }
+
+  await processedImage
     .resize({
       width: targetWidth,
-      withoutEnlargement: true 
+      withoutEnlargement: true
     })
     .jpeg({ quality: 85 })
     .toFile(outputPath);
@@ -154,7 +203,6 @@ async function resizeImage(inputPath, outputPath, targetWidth) {
 
 const TEMP_DIR = path.join(process.cwd(), "tempUploads");
 
-// ensure temp folder exists
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
