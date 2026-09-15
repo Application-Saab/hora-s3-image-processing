@@ -143,7 +143,7 @@ async function detectImageOrientation(filePath) {
     );
 
     const response = await axios.post(
-      "http://localhost:8000/detect-orientation",
+      "https://horaservices.com/face-api/detect-orientation",
       formData,
       {
         headers: formData.getHeaders(),
@@ -479,7 +479,7 @@ async function handleDriveFolderUpload(
               formData.append("isLastBatch", "false");
 
               await axios.post(
-                "http://localhost:8000/count-unique-persons",
+                "https://horaservices.com/face-api/count-unique-persons",
                 formData,
                 {
                   headers: formData.getHeaders
@@ -827,7 +827,7 @@ async function handleDriveFolderUpload(
       formData.append("isLastBatch", "true");
 
       const faceResponse = await axios.post(
-        "http://localhost:8000/count-unique-persons",
+        "https://horaservices.com/face-api/count-unique-persons",
         formData,
         {
           headers: formData.getHeaders
