@@ -13,7 +13,8 @@ const {
   uploadFileToS3,
   generateVideoPreview,
   deleteFileWithRetry,
-  getVideoDuration
+  getVideoDuration,
+  compressVideo,
 } = require("../utils/auth.util.js");
 const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
 
@@ -51,20 +52,91 @@ async function isFolderPubliclyAccessible(folderId, apiKey) {
   }
 }
 async function downloadFile(url, dest) {
-  const writer = fs.createWriteStream(dest);
   try {
+    const idMatch = url.match(/id=([^&]+)/);
+    if (!idMatch) {
+      throw new Error("Could not extract file id from URL: " + url);
+    }
+    const fileId = idMatch[1];
+
+    const driveApiUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${apiKey}`;
+
+    console.log(`📡 Requesting file from Drive API: ${fileId}`);
+
     const response = await axios({
-      url,
+      url: driveApiUrl,
       method: "GET",
       responseType: "stream",
+      timeout: 30000,          // 30 sec - agar initial response hi nahi aaya
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
     });
+
+    console.log(`✅ Got response headers, content-type: ${response.headers["content-type"]}, content-length: ${response.headers["content-length"]}`);
+
+    const contentType = response.headers["content-type"] || "";
+
+    if (contentType.includes("application/json") || contentType.includes("text/html")) {
+      let body = "";
+      for await (const chunk of response.data) {
+        body += chunk.toString();
+      }
+      throw new Error(`Drive API returned non-file response: ${body.slice(0, 300)}`);
+    }
+
+    const writer = fs.createWriteStream(dest);
+
+    let downloadedBytes = 0;
+    let lastLogTime = Date.now();
+
+    // Stall detection — agar 60 sec tak koi data nahi aaya, request abort karo
+    let stallTimer;
+    const resetStallTimer = () => {
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        console.log("❌ Download stalled — no data received in 60s, aborting");
+        response.data.destroy(new Error("Download stalled - no data for 60s"));
+      }, 60000);
+    };
+    resetStallTimer();
+
+    response.data.on("data", (chunk) => {
+      downloadedBytes += chunk.length;
+      resetStallTimer();
+
+      // Har 5 sec mein progress log karo, spam na ho
+      if (Date.now() - lastLogTime > 5000) {
+        console.log(`⬇️  Downloaded so far: ${(downloadedBytes / 1024 / 1024).toFixed(2)} MB`);
+        lastLogTime = Date.now();
+      }
+    });
+
     response.data.pipe(writer);
+
     return new Promise((resolve, reject) => {
-      writer.on("finish", resolve);
-      writer.on("error", reject);
+      writer.on("finish", () => {
+        clearTimeout(stallTimer);
+        console.log(`✅ Download finished: ${(downloadedBytes / 1024 / 1024).toFixed(2)} MB total`);
+        resolve();
+      });
+      writer.on("error", (err) => {
+        clearTimeout(stallTimer);
+        reject(err);
+      });
+      response.data.on("error", (err) => {
+        clearTimeout(stallTimer);
+        reject(err);
+      });
     });
   } catch (error) {
-    console.log("ERROR DOWNLOADING DRIVE ................", error, "URL....... :", url, "DESTINATION .........", dest)
+    console.log(
+      "ERROR DOWNLOADING DRIVE ................",
+      error.response?.data || error.message,
+      "URL....... :",
+      url,
+      "DESTINATION .........",
+      dest
+    );
     throw error;
   }
 }
@@ -318,6 +390,13 @@ async function handleDriveFolderUpload(
       console.log(`⬇️ STEP 1 DOWNLOAD STARTED: ${originalName} | Batch: ${file.batch}`);
 
       await downloadFile(downloadUrl, filePath);
+      console.log(`✅ STEP 2   DOWNLOAD COMPLETED: ${originalName} | Batch: ${file.batch}`);
+
+      const downloadedStats = fs.statSync(filePath);
+      if (downloadedStats.size < 10 * 1024) {
+        throw new Error(`Downloaded file too small (${downloadedStats.size} bytes) — likely invalid`);
+      }
+      console.log(`📦 Downloaded file size: ${(downloadedStats.size / 1024 / 1024).toFixed(2)} MB`);
 
       console.log(`✅ STEP 2   DOWNLOAD COMPLETED: ${originalName} | Batch: ${file.batch}`);
 
@@ -520,25 +599,41 @@ async function handleDriveFolderUpload(
       // ================= VIDEO =================
       if (isVideo) {
         clipPath = path.join(tempDir, `clip_${driveFileId}.mp4`);
+        let compressedPath = path.join(tempDir, `compressed_${driveFileId}.mp4`);
 
         try {
-          console.log("STEP 3 GENERATE PREVIEW CLIP START", file.name)
+          console.log("STEP 3 GENERATE PREVIEW CLIP + COMPRESSION START", file.name)
 
-          await generateVideoPreview(filePath, clipPath, 3);
+          // Small files ko compress karne ka fayda nahi, time bacha lo
+          const stats = fs.statSync(filePath);
+          const fileSizeMB = stats.size / (1024 * 1024);
+          console.log(`📦 Original video size: ${fileSizeMB.toFixed(2)} MB`);
+
+          let skipCompression = fileSizeMB < 200;
+
+          if (skipCompression) {
+            console.log("⏩ File already small, SKIPPING compression");
+            await generateVideoPreview(filePath, clipPath, 3);
+            compressedPath = filePath; // original hi upload hoga
+          } else {
+            await Promise.all([
+              generateVideoPreview(filePath, clipPath, 3),
+              compressVideo(filePath, compressedPath, 23),
+            ]);
+          }
 
           const durationVal = await getVideoDuration(filePath);
 
-          console.log("STEP 4 VIDEO PREVIEW GENERATION COMPLETE", file.name)
+          console.log("STEP 4 VIDEO PREVIEW + COMPRESSION GENERATION COMPLETE", file.name)
 
-          console.log("STEP 5 VIDEO S3 UPLOAD VIDEO START", file.name)
-
+          console.log("STEP 5 VIDEO S3 UPLOAD START", file.name)
 
           const uploadVideo = uploadFileToS3(
-            filePath,
+            compressedPath,
             fileName,
             folderPath,
             phoneNo,
-            file.mimeType
+            "video/mp4"
           );
 
           const uploadClip = uploadFileToS3(
@@ -548,10 +643,12 @@ async function handleDriveFolderUpload(
             phoneNo,
             "video/mp4"
           );
+
+          const [video, clip] = await Promise.all([uploadVideo, uploadClip]);
+
           console.log("STEP 6 VIDEO S3 UPLOAD COMPLETE", file.name)
           console.log("STEP 7 VIDEO DB INSERT START", file.name)
 
-          const [video, clip] = await Promise.all([uploadVideo, uploadClip]);
           try {
 
             const result = await WebLink.updateOne(
@@ -596,7 +693,7 @@ async function handleDriveFolderUpload(
 
 
           if (filePath && fs.existsSync(filePath)) {
-            console.log("DELETE VIDEO START");
+            console.log("DELETE ORIGINAL VIDEO START");
             await deleteFileWithRetry(filePath);
           }
 
@@ -605,10 +702,25 @@ async function handleDriveFolderUpload(
             await deleteFileWithRetry(clipPath);
           }
 
+          // agar compression skip hua tha, compressedPath === filePath hai,
+          // usko dobara delete karne ki koshish mat karo
+          if (!skipCompression && compressedPath && fs.existsSync(compressedPath)) {
+            console.log("DELETE COMPRESSED VIDEO START");
+            await deleteFileWithRetry(compressedPath);
+          }
+
           return { type: "video", fileName: originalName };
         }
         catch (error) {
-          console.log('video upload error', error); throw error;
+          console.log('video upload error', error);
+
+          if (filePath && fs.existsSync(filePath)) await deleteFileWithRetry(filePath).catch(() => { });
+          if (clipPath && fs.existsSync(clipPath)) await deleteFileWithRetry(clipPath).catch(() => { });
+          if (compressedPath && compressedPath !== filePath && fs.existsSync(compressedPath)) {
+            await deleteFileWithRetry(compressedPath).catch(() => { });
+          }
+
+          throw error;
         }
       }
       else {

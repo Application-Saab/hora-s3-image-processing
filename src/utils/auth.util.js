@@ -293,6 +293,38 @@ const getVideoDuration = (filePath) => {
   });
 };
 
+const compressVideo = (inputPath, outputPath, crf = 23) => {
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
+    console.log("🎬 Video compression started...");
+
+    ffmpeg(inputPath)
+      .videoCodec("libx264")
+      .outputOptions([
+        `-crf ${crf}`,           // 20-23 = sweet spot quality
+        "-preset veryfast",      // speed priority (medium se 3-4x fast)
+        "-threads 0",            // auto use all available CPU cores
+        "-c:a copy",             // audio re-encode skip, time bachaega
+        "-movflags +faststart",  // streaming friendly
+        "-pix_fmt yuv420p",      // compatibility
+      ])
+      .size("?x1080")             // 1080p se bada ho to hi downscale karega
+      .on("progress", (p) => {
+        console.log(`Compression progress: ${p.percent?.toFixed(1)}%`);
+      })
+      .on("end", () => {
+        const timeTaken = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`✅ Video compressed in ${timeTaken}s`);
+        resolve(outputPath);
+      })
+      .on("error", (err) => {
+        console.log("❌ Video compression failed:", err.message);
+        reject(err);
+      })
+      .save(outputPath);
+  });
+};
+
 module.exports = {
   uploadFileToS3,
   uploadFileToS3Wonderland,
@@ -303,4 +335,5 @@ module.exports = {
   TEMP_DIR,
   deleteFileWithRetry,
   getVideoDuration,
+  compressVideo,
 };
