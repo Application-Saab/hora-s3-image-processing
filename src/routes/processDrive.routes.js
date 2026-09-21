@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { handleDriveFolderUpload, uploadSingleImage } = require("../services/drive.service");
+const { handleDriveFolderUpload, uploadSingleImage, processSupplierS3Folder } = require("../services/drive.service");
 const Folder = require("../models/folder");
 const fs = require("fs");
 const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVideoDuration, resizeImage } = require("../utils/auth.util");
@@ -1271,5 +1271,208 @@ router.post("/resize-and-clean-original-images", async (req, res) => {
   }
 });
 
+
+router.post("/get-event-capsule-presigned-url", async (req, res) => {
+  try {
+    const { fileName, fileType, folderName } = req.body;
+
+    if (!fileName || !fileType || !folderName) {
+      return res.status(400).json({
+        success: false,
+        message: "fileName, fileType and folderName are required",
+      });
+    }
+
+    const key = `${folderName}/${fileName}`;
+
+    const uploadURL = await s3.getSignedUrlPromise("putObject", {
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: key,
+      ContentType: fileType,
+      Expires: 900, // 15 minutes
+    });
+
+    return res.status(200).json({
+      success: true,
+      uploadURL,
+      key,
+    });
+  } catch (error) {
+    console.error("Event Capsule presigned URL error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to generate presigned URL",
+      error: error.message,
+    });
+  }
+});
+
+router.get("/get-s3-folder-images", async (req, res) => {
+  try {
+    const { folderName } = req.query;
+
+    if (!folderName) {
+      return res.status(400).json({
+        message: "folderName is required",
+      });
+    }
+
+    const prefix = folderName.endsWith("/")
+      ? folderName
+      : `${folderName}/`;
+
+    const data = await s3
+      .listObjectsV2({
+        Bucket: process.env.S3_BUCKET_NAME,
+        Prefix: prefix,
+      })
+      .promise();
+
+    const files = (data.Contents || [])
+      .filter((item) => item.Key !== prefix)
+      .map((item) => ({
+        key: item.Key,
+        fileName: item.Key.split("/").pop(),
+        size: item.Size,
+        lastModified: item.LastModified,
+        url: `https://${process.env.S3_BUCKET_NAME}.s3.eu-north-1.amazonaws.com/${item.Key}`,
+      }));
+
+    res.json({
+      message: "S3 folder files fetched successfully",
+      folderName,
+      count: files.length,
+      data: files,
+    });
+  } catch (err) {
+    console.error("Get S3 folder images failed:", err);
+
+    res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
+  }
+});
+
+
+router.delete("/delete-s3-image", async (req, res) => {
+  try {
+    const { key } = req.body;
+
+    if (!key) {
+      return res.status(400).json({
+        message: "S3 key is required",
+      });
+    }
+
+    await s3
+      .deleteObject({
+        Bucket: process.env.S3_BUCKET_NAME,
+        Key: key,
+      })
+      .promise();
+
+    res.json({
+      message: "Image deleted successfully from S3",
+      key,
+    });
+  } catch (err) {
+    console.error("S3 delete failed:", err);
+
+    res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
+  }
+});
+
+router.post("/supplier-upload-done", async (req, res) => {
+  try {
+    const { folderId, folderName, orderId } = req.body;
+
+    if (!folderId) {
+      return res.status(422).json({
+        success: false,
+        message: "folderId is required",
+      });
+    }
+
+    if (!folderName) {
+      return res.status(422).json({
+        success: false,
+        message: "folderName is required",
+      });
+    }
+
+    // ==========================================
+    // MARK SUPPLIER UPLOAD AS DONE
+    // ==========================================
+
+    const folder = await Folder.findByIdAndUpdate(
+      folderId,
+      {
+        $set: {
+          isFromSupplierDone: true,
+        },
+      },
+      {
+        new: true,
+      }
+    );
+
+    if (!folder) {
+      return res.status(404).json({
+        success: false,
+        message: "Folder not found",
+      });
+    }
+
+    console.log(
+      "✅ isFromSupplierDone set to true:",
+      folderId
+    );
+
+    // ==========================================
+    // START S3 PROCESSING
+    // ==========================================
+
+    processSupplierS3Folder(
+      folderId,
+      folderName,
+      orderId,
+    ).catch((error) => {
+      console.error(
+        "❌ Supplier S3 background processing failed:",
+        error
+      );
+    });
+
+    // ==========================================
+    // RESPONSE
+    // ==========================================
+
+    return res.status(200).json({
+      success: true,
+      message: "Supplier upload marked as done and processing started",
+      data: {
+        folderId: folder._id,
+        isFromSupplierDone:
+          folder.isFromSupplierDone,
+      },
+    });
+
+  } catch (error) {
+    console.error(
+      "❌ Supplier upload done error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong",
+    });
+  }
+});
 
 module.exports = router;

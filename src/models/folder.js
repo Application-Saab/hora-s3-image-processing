@@ -101,6 +101,10 @@ const FolderSchema = new mongoose.Schema(
           s3Key: { type: String },
           thumbnailKey: { type: String }
         },
+        isFromSupplierDone: {
+          type: Boolean,
+          default: false,
+        },
 
         createdAt: {
           type: Date,
