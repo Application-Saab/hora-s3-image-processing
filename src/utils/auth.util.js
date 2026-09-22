@@ -279,42 +279,75 @@ const formatDuration = (seconds) => {
   return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
 };
 
-const getVideoDuration = (filePath) => {
-  return new Promise((resolve) => {
+const getVideoDurationSeconds = (filePath) =>
+  new Promise((resolve) => {
     ffmpeg.ffprobe(filePath, (err, metadata) => {
-      if (err) {
-        console.error("FFprobe error:", err);
-        resolve("");
-      } else {
-        const duration = metadata?.format?.duration;
-        resolve(duration ? formatDuration(parseFloat(duration)) : "");
-      }
+      if (err) return resolve(0);
+      resolve(parseFloat(metadata?.format?.duration) || 0);
     });
   });
-};
 
-const compressVideo = (inputPath, outputPath, crf = 23) => {
+const compressVideo = async (inputPath, outputPath, options = {}) => {
+  const {
+    targetSizeMB = 250,   // approx target size
+    crf = 22,             // 23-26: quality vs size
+    maxShortSide = 1080,  // 1080p (landscape me height, portrait me width)
+    audioKbps = 128,
+  } = options;
+
+  const duration = await getVideoDurationSeconds(inputPath);
+
+  // target size se max video bitrate nikalo
+  let maxrateK = 0;
+  if (duration > 0) {
+    const totalKbps = (targetSizeMB * 8192) / duration;
+    maxrateK = Math.max(800, Math.floor((totalKbps - audioKbps) * 0.95));
+  }
+  console.log(`Duration: ${duration}s | maxrate: ${maxrateK} kbps`);
+
+  // sirf bada ho to hi downscale, kabhi upscale nahi; portrait/landscape dono sahi
+  const scaleFilter =
+    `scale='if(gt(iw,ih),-2,min(${maxShortSide},iw))':'if(gt(iw,ih),min(${maxShortSide},ih),-2)'`;
+
+  // const outputOptions = [
+  //   `-crf ${crf}`,
+  //   "-preset slow",          // veryfast se ~15-25% chhoti file, same quality
+  //   "-profile:v high",
+  //   "-level 4.1",
+  //   "-pix_fmt yuv420p",        // sabhi devices pe play hoga
+  //   "-threads 0",
+  //   "-movflags +faststart",
+  // ];
+
+  const outputOptions = [
+    `-crf ${crf}`,
+    "-preset veryfast",
+    "-profile:v main",     // HEVC ke liye valid profile
+    // "-level 4.1",        // ye bhi optional hata sakte ho, x265 khud handle kar leta hai
+    "-pix_fmt yuv420p",
+    "-threads 0",
+    "-movflags +faststart",
+  ];
+
+  if (maxrateK > 0) {
+    outputOptions.push(`-maxrate ${maxrateK}k`, `-bufsize ${maxrateK * 2}k`);
+  }
+
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
     console.log("🎬 Video compression started...");
 
     ffmpeg(inputPath)
       .videoCodec("libx264")
-      .outputOptions([
-        `-crf ${crf}`,           // 20-23 = sweet spot quality
-        "-preset veryfast",      // speed priority (medium se 3-4x fast)
-        "-threads 0",            // auto use all available CPU cores
-        "-c:a copy",             // audio re-encode skip, time bachaega
-        "-movflags +faststart",  // streaming friendly
-        "-pix_fmt yuv420p",      // compatibility
-      ])
-      .size("?x1080")             // 1080p se bada ho to hi downscale karega
+      .videoFilters(scaleFilter)
+      .audioCodec("aac")
+      .audioBitrate(`${audioKbps}k`)
+      .outputOptions(outputOptions)
       .on("progress", (p) => {
-        console.log(`Compression progress: ${p.percent?.toFixed(1)}%`);
+        if (p.percent) console.log(`Compression progress: ${p.percent.toFixed(1)}%`);
       })
       .on("end", () => {
-        const timeTaken = ((Date.now() - startTime) / 1000).toFixed(2);
-        console.log(`✅ Video compressed in ${timeTaken}s`);
+        console.log(`✅ Video compressed in ${((Date.now() - startTime) / 1000).toFixed(2)}s`);
         resolve(outputPath);
       })
       .on("error", (err) => {
@@ -334,6 +367,6 @@ module.exports = {
   upload,
   TEMP_DIR,
   deleteFileWithRetry,
-  getVideoDuration,
+  getVideoDurationSeconds,
   compressVideo,
 };
