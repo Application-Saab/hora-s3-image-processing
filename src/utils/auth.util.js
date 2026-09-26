@@ -293,6 +293,66 @@ const getVideoDuration = (filePath) => {
   });
 };
 
+
+const compressVideo = (
+  inputPath,
+  outputPath,
+  crf = 32,                  // CRF 32 targetting 50MB
+  codec = "libx265"          
+) => {
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
+
+    console.log(
+      `🎬 COMPRESSION START | Codec: ${codec} | CRF: ${crf} | Output: ${outputPath}`
+    );
+
+    // Speed vs Compression optimization
+    const presetOption = codec === "libsvtav1" ? "-preset 6" : "-preset fast";
+
+    ffmpeg(inputPath)
+      .videoCodec(codec)
+      .outputOptions([
+        `-crf ${crf}`,
+        presetOption,              
+        "-threads 0",
+        "-pix_fmt yuv420p10le",    
+        "-c:a aac",                
+        "-b:a 96k",                // Audio capping
+        "-movflags +faststart",
+        ...(codec === "libx265" ? ["-tag:v hvc1"] : []), 
+        ...(codec === "libsvtav1" ? ["-svtav1-params tune=0"] : [])
+      ])
+      .size("?x1080")              
+      .on("progress", (p) => {
+        if (p.percent) {
+          console.log(
+            `⏳ ${codec} CRF ${crf}: ${p.percent.toFixed(1)}%`
+          );
+        }
+      })
+      .on("end", () => {
+        const timeTaken =
+          ((Date.now() - startTime) / 1000).toFixed(2);
+
+        console.log(
+          `✅ COMPRESSION DONE | ${codec} | CRF ${crf} | ${timeTaken}s`
+        );
+
+        resolve(outputPath);
+      })
+      .on("error", (err) => {
+        console.log(
+          `❌ COMPRESSION FAILED | ${codec} | CRF ${crf}:`,
+          err.message
+        );
+
+        reject(err);
+      })
+      .save(outputPath);
+  });
+};
+
 module.exports = {
   uploadFileToS3,
   uploadFileToS3Wonderland,
@@ -301,6 +361,7 @@ module.exports = {
   generateVideoPreview,
   upload,
   TEMP_DIR,
+  compressVideo,
   deleteFileWithRetry,
   getVideoDuration,
 };
