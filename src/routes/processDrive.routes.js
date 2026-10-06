@@ -1312,53 +1312,6 @@ router.post("/get-event-capsule-presigned-url", async (req, res) => {
   }
 });
 
-router.get("/get-s3-folder-images", async (req, res) => {
-  try {
-    const { folderName } = req.query;
-
-    if (!folderName) {
-      return res.status(400).json({
-        message: "folderName is required",
-      });
-    }
-
-    const prefix = folderName.endsWith("/")
-      ? folderName
-      : `${folderName}/`;
-
-    const data = await s3
-      .listObjectsV2({
-        Bucket: process.env.S3_BUCKET_NAME,
-        Prefix: prefix,
-      })
-      .promise();
-
-    const files = (data.Contents || [])
-      .filter((item) => item.Key !== prefix)
-      .map((item) => ({
-        key: item.Key,
-        fileName: item.Key.split("/").pop(),
-        size: item.Size,
-        lastModified: item.LastModified,
-        url: `https://${process.env.S3_BUCKET_NAME}.s3.eu-north-1.amazonaws.com/${item.Key}`,
-      }));
-
-    res.json({
-      message: "S3 folder files fetched successfully",
-      folderName,
-      count: files.length,
-      data: files,
-    });
-  } catch (err) {
-    console.error("Get S3 folder images failed:", err);
-
-    res.status(500).json({
-      message: "Server error",
-      error: err.message,
-    });
-  }
-});
-
 
 router.delete("/delete-s3-image", async (req, res) => {
   try {

@@ -7,13 +7,16 @@ const { sendWhatsApp } = require('../utils/whatsappservice.js');
 const FolderModel = require("../models/folder.js");
 const FormData = require("form-data");
 const AWS = require("aws-sdk");
+const { emitToSupplier } = require("../../socket.js"); 
 const {
   generateThumbnail,
   resizeImage,
   uploadFileToS3,
   generateVideoPreview,
+  compressVideo,
+  uploadVideoParts,
   deleteFileWithRetry,
-  getVideoDuration
+  getVideoDuration,
 } = require("../utils/auth.util.js");
 const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
 
@@ -1052,7 +1055,7 @@ const VIDEO_QUEUE_SIZE = 3;               // 3 parallel
 const PROCESSED_PREFIXES = ["thumb_", "2880_", "1080_", "clip_"];
 
 async function processSupplierS3Folder({ folderId, folderName, userId, subFolderId }) {
-  const lockKey = String(folderId);
+  const lockKey = `${folderId}:${subFolderId ? String(subFolderId) : "all"}`;
 
   if (activeSupplierFolders.has(lockKey)) {
     return { success: false, alreadyRunning: true };
@@ -1060,6 +1063,33 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
   activeSupplierFolders.add(lockKey);
 
   const tempDir = path.join(__dirname, "tempUploads");
+
+
+  async function saveAndEmit(fileId, setFields) {
+    const doc = await WebLink.findOneAndUpdate(
+      { fileId, mainFolderId: folderId },
+      {
+        $set: {
+          fileId,
+          mainFolderId: folderId,
+          orderById: userId,
+          status: "done",
+          ...setFields,
+        },
+        ...(subFolderId ? { $addToSet: { folderIds: subFolderId } } : {}),
+      },
+      { upsert: true, new: true }
+    ).lean();
+
+    // DB me save hote hi frontend ko bhej do
+    emitToSupplier({ userId, folderId }, "media:done", {
+      folderId: String(folderId),
+      subFolderId: subFolderId || null,
+      file: doc,
+    });
+
+    return doc;
+  }
 
   try {
     console.log(`🚀 SUPPLIER PROCESSING START | folder: ${folderName}`);
@@ -1106,6 +1136,11 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
 
     console.log(`📦 Pending: ${mediaFiles.length} | Skipped: ${skippedCount}`);
 
+    emitToSupplier({ userId, folderId }, "media:processing:start", {
+      folderId: String(folderId),
+      total: mediaFiles.length,
+    });
+
     // ---------------------------- IMAGE (same as before) ----------------------------
     async function processImage({ key: originalKey, fileId, baseId }) {
       if (doneIds.has(fileId)) {
@@ -1128,22 +1163,11 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
         const res2880 = await uploadFileToS3(local2880, fileName2880, folderName, userId, "image/jpeg");
         if (!res2880?.Key) throw new Error("S3 upload did not return Key for 2880 image");
 
-        await WebLink.updateOne(
-          { fileId, mainFolderId: folderId },
-          {
-            $set: {
-              fileId,
-              mainFolderId: folderId,
-              orderById: userId,
-              type: "image",
-              originalUrl: res2880.Location || null,
-              originalKey: res2880.Key,
-              status: "done",
-            },
-            ...(subFolderId ? { $addToSet: { folderIds: subFolderId } } : {}),
-          },
-          { upsert: true }
-        );
+        await saveAndEmit(fileId, {
+          type: "image",
+          originalUrl: res2880.Location || null,
+          originalKey: res2880.Key,
+        });
 
         if (originalKey !== res2880.Key) {
           try {
@@ -1200,25 +1224,14 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
         }
 
         // 4. DB (dono upload hone ke baad hi)
-        await WebLink.updateOne(
-          { fileId, mainFolderId: folderId },
-          {
-            $set: {
-              fileId,
-              mainFolderId: folderId,
-              orderById: userId,
-              type: "video",
-              originalUrl: resVideo.Location || null,
-              originalKey: resVideo.Key,
-              videoClipUrl: resClip.Location || null,
-              videoClipKey: resClip.Key,
-              duration: duration || "",
-              status: "done",
-            },
-            ...(subFolderId ? { $addToSet: { folderIds: subFolderId } } : {}),
-          },
-          { upsert: true }
-        );
+        await saveAndEmit(fileId, {
+          type: "video",
+          originalUrl: resVideo.Location || null,
+          originalKey: resVideo.Key,
+          videoClipUrl: resClip.Location || null,
+          videoClipKey: resClip.Key,
+          duration: duration || "",
+        });
 
         // 5. Original delete (DB done ke baad)
         if (originalKey !== resVideo.Key) {
@@ -1253,6 +1266,11 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
           if (attempt === SUPPLIER_MAX_RETRIES) {
             stats.failed++;
             failedFiles.push({ fileName: file.fileId, error: err.message });
+            emitToSupplier({ userId, folderId }, "media:failed", {
+              folderId: String(folderId),
+              fileId: file.fileId,
+              error: err.message,
+            });
           }
         }
       }
@@ -1274,6 +1292,12 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
       { _id: folderId },
       { $set: { status: stats.failed === 0 ? "done" : "failed" } }
     );
+
+    emitToSupplier({ userId, folderId }, "media:folder:done", {
+      folderId: String(folderId),
+      ...stats,
+      failedFiles,
+    });
 
     console.log("===== SUPPLIER FINAL REPORT =====", stats, failedFiles);
     return { success: true, ...stats, failedFiles };

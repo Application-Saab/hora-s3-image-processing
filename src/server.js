@@ -1,6 +1,8 @@
 require("dotenv").config();
+const http = require("http");             
 const app = require("./app");
 const mongoose = require("mongoose");
+const { initSocket } = require(".././socket");  
 
 mongoose.set("strictQuery", true);
 mongoose.connect(
@@ -9,6 +11,9 @@ mongoose.connect(
 
 const PORT = process.env.PORT || 4000;
 
-app.listen(PORT, () => {
+const server = http.createServer(app);
+initSocket(server);
+
+server.listen(PORT, () => {                   
   console.log("Media Worker running on port", PORT);
 });
