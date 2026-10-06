@@ -1048,10 +1048,10 @@ async function safeDeleteLocalFile(filePath) {
 }
 
 
-const SUPPLIER_CONCURRENCY = 1; // video x265 heavy hai, 1 hi rakho
+const SUPPLIER_CONCURRENCY = 1; 
 const SUPPLIER_VIDEO_CRF = 22;
-const VIDEO_PART_SIZE = 25 * 1024 * 1024; // 25MB chunks
-const VIDEO_QUEUE_SIZE = 3;               // 3 parallel
+const VIDEO_PART_SIZE = 25 * 1024 * 1024; 
+const VIDEO_QUEUE_SIZE = 3;              
 const PROCESSED_PREFIXES = ["thumb_", "2880_", "1080_", "clip_"];
 
 async function processSupplierS3Folder({ folderId, folderName, userId, subFolderId }) {
@@ -1081,7 +1081,6 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
       { upsert: true, new: true }
     ).lean();
 
-    // DB me save hote hi frontend ko bhej do
     emitToSupplier({ userId, folderId }, "media:done", {
       folderId: String(folderId),
       subFolderId: subFolderId || null,
@@ -1113,7 +1112,6 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
 
       const fileId = path.basename(obj.Key);
 
-      // Already processed output files ko dobara queue me mat daalo
       if (PROCESSED_PREFIXES.some((p) => fileId.startsWith(p))) continue;
 
       if (subFolderId) {
@@ -1141,7 +1139,6 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
       total: mediaFiles.length,
     });
 
-    // ---------------------------- IMAGE (same as before) ----------------------------
     async function processImage({ key: originalKey, fileId, baseId }) {
       if (doneIds.has(fileId)) {
         await deleteS3Object(originalKey);
@@ -1184,7 +1181,6 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
       }
     }
 
-    // ---------------------------- VIDEO (new) ----------------------------
     async function processVideo({ key: originalKey, fileId, baseId }) {
       if (doneIds.has(fileId)) {
         await deleteS3Object(originalKey);
@@ -1203,13 +1199,10 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
 
         const duration = await getVideoDuration(localOriginal);
 
-        // 1. 3 second clip
         await generateVideoPreview(localOriginal, localClip, 3, 0);
 
-        // 2. Compress: CRF 22 + H265 + max 1080p
         await compressVideo(localOriginal, localCompressed, SUPPLIER_VIDEO_CRF, "libx265");
 
-        // 3. S3 upload: 25MB chunks, 3 parallel
         const uploadOpts = { partSize: VIDEO_PART_SIZE, queueSize: VIDEO_QUEUE_SIZE };
 
         const resClip = await uploadVideoParts(
@@ -1223,7 +1216,6 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
           throw new Error("S3 upload did not return Key for video/clip");
         }
 
-        // 4. DB (dono upload hone ke baad hi)
         await saveAndEmit(fileId, {
           type: "video",
           originalUrl: resVideo.Location || null,
@@ -1233,7 +1225,6 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
           duration: duration || "",
         });
 
-        // 5. Original delete (DB done ke baad)
         if (originalKey !== resVideo.Key) {
           try {
             await deleteS3Object(originalKey);
@@ -1250,7 +1241,6 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
       }
     }
 
-    // ---------------------------- Retry + pool ----------------------------
     const stats = { done: 0, cleaned: 0, failed: 0 };
     const failedFiles = [];
 

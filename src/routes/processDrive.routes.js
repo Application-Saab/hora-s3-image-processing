@@ -1312,53 +1312,7 @@ router.post("/get-event-capsule-presigned-url", async (req, res) => {
   }
 });
 
-
-router.delete("/delete-s3-image", async (req, res) => {
-  try {
-    const { key } = req.body;
-
-    if (!key) {
-      return res.status(400).json({
-        message: "S3 key is required",
-      });
-    }
-
-    await s3
-      .deleteObject({
-        Bucket: process.env.S3_BUCKET_NAME,
-        Key: key,
-      })
-      .promise();
-
-    res.json({
-      message: "Image deleted successfully from S3",
-      key,
-    });
-  } catch (err) {
-    console.error("S3 delete failed:", err);
-
-    res.status(500).json({
-      message: "Server error",
-      error: err.message,
-    });
-  }
-});
-
-// =====================================================================
-// SUPPLIER ONLY: upload done + S3 processing
-// - Order model / WhatsApp / Face API / thumb / video: kuch nahi
-// - Sirf 2880 image S3 + DB me jayegi, original S3 se delete hoga
-// =====================================================================
-
-
-
-// Same folder par parallel processing na chale
 const activeSupplierFolders = new Set();
-
-// ---------------------------------------------------------------------
-// ROUTE
-// body: { folderName, userId, subFolderId? }
-// ---------------------------------------------------------------------
 router.post("/supplier-upload-done", async (req, res) => {
   try {
     const { folderName, userId, subFolderId } = req.body;
@@ -1373,7 +1327,6 @@ router.post("/supplier-upload-done", async (req, res) => {
     const cleanFolderName = String(folderName).replace(/\/+$/, "");
     const supplierId = String(userId);
 
-    // Guard: supplier sirf apna recentWork folder process kar sakta hai
     if (cleanFolderName !== `recentWork_${supplierId}`) {
       return res.status(403).json({
         success: false,
@@ -1381,7 +1334,6 @@ router.post("/supplier-upload-done", async (req, res) => {
       });
     }
 
-    // Folder DB se lo (folderId frontend se nahi aata)
     const folder = await Folder.findOne({
       folderName: cleanFolderName,
       customerId: supplierId,
@@ -1398,7 +1350,6 @@ router.post("/supplier-upload-done", async (req, res) => {
 
     const folderId = String(folder._id);
 
-    // Pehle se chal raha hai to dobara start nahi karna
     if (activeSupplierFolders.has(folderId)) {
       return res.status(202).json({
         success: true,
@@ -1407,7 +1358,6 @@ router.post("/supplier-upload-done", async (req, res) => {
       });
     }
 
-    // isFromSupplierDone schema me subFolders ke andar hai (top level par nahi)
     if (subFolderId) {
       await Folder.updateOne(
         { _id: folderId, "subFolders._id": String(subFolderId) },
@@ -1415,7 +1365,6 @@ router.post("/supplier-upload-done", async (req, res) => {
       );
     }
 
-    // Background processing (lock function ke start me hi lag jata hai)
     processSupplierS3Folder({
       folderId,
       folderName: cleanFolderName,

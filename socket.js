@@ -21,9 +21,8 @@ function initSocket(server) {
         }
 
         socket.userId = String(userId);
-        socket.join(socket.userId); // user room
+        socket.join(socket.userId); 
 
-        // Frontend jis folder ko dekh raha hai uska room join kare
         socket.on("joinFolder", ({ folderId }) => {
             if (folderId) socket.join(`folder:${folderId}`);
         });
@@ -41,7 +40,6 @@ function getIO() {
     return io;
 }
 
-// user room + folder room dono me ek hi baar emit hoga (duplicate nahi)
 function emitToSupplier({ userId, folderId }, event, payload) {
     if (!io) return;
     let target = io.to(String(userId));
