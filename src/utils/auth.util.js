@@ -123,7 +123,8 @@ const uploadVideoParts = async (
   filePath,
   fileName,
   folderName = "test_uploads",
-  contentType = "video/mp4"
+  contentType = "video/mp4",
+  { partSize = 25 * 1024 * 1024, queueSize = 3 } = {}
 ) => {
   console.log(`\n☁️  STARTING S3 MULTIPART UPLOAD: ${fileName}`);
 
@@ -134,91 +135,79 @@ const uploadVideoParts = async (
   const stats = fs.statSync(filePath);
   console.log(`📦 Upload File size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
 
+  const bucket = process.env.S3_BUCKET_NAME || "photography-hora";
+  const key = `${folderName}/${fileName}`;
   const fileStream = fs.createReadStream(filePath);
 
   const parallelUploadToS3 = new Upload({
     client: s3Client,
     params: {
-      // Hardcoded fallback taaki ENV issue aane par bhi "Bucket is missing" error na aaye
-      Bucket: process.env.S3_BUCKET_NAME || "photography-hora",
-      Key: `${folderName}/${fileName}`,
+      Bucket: bucket,
+      Key: key,
       Body: fileStream,
       ContentType: contentType,
     },
-    partSize: 50 * 1024 * 1024, // 50MB Chunks
-    queueSize: 8,               // 8 Parallel Batch Threads
+    partSize,                    // 25MB chunks
+    queueSize,                   // 3 parallel
+    leavePartsOnError: false,    // fail hua to adhure parts S3 se clean ho jayenge
   });
 
-  // Real-time Progress Tracking
   parallelUploadToS3.on("httpUploadProgress", (progress) => {
     if (progress.total) {
       const percentage = ((progress.loaded / progress.total) * 100).toFixed(1);
-      console.log(
-        `⏳ S3 Upload Progress (${fileName}): ${percentage}% [${(progress.loaded / 1024 / 1024).toFixed(1)} MB]`
-      );
+      console.log(`⏳ S3 Upload (${fileName}): ${percentage}%`);
     }
   });
 
   const result = await parallelUploadToS3.done();
   console.log(`✅ S3 UPLOAD SUCCESS: ${fileName}`);
-  return result;
-};
 
+  // Key/Location hamesha mile, isliye fallback laga diya
+  return {
+    ...result,
+    Key: result.Key || key,
+    Location:
+      result.Location ||
+      `https://${bucket}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`,
+  };
+};
 
 
 const compressVideo = (
   inputPath,
   outputPath,
-  crf = 32,                  // CRF 32 targetting 50MB
+  crf = 22,
   codec = "libx265"
 ) => {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
+    console.log(`🎬 COMPRESSION START | Codec: ${codec} | CRF: ${crf}`);
 
-    console.log(
-      `🎬 COMPRESSION START | Codec: ${codec} | CRF: ${crf} | Output: ${outputPath}`
-    );
-
-    // Speed vs Compression optimization
     const presetOption = codec === "libsvtav1" ? "-preset 6" : "-preset fast";
 
     ffmpeg(inputPath)
       .videoCodec(codec)
+      .videoFilters("scale=-2:'min(1080,ih)'")   // max 1080p, upscale nahi
       .outputOptions([
         `-crf ${crf}`,
         presetOption,
         "-threads 0",
-        "-pix_fmt yuv420p10le",
+        "-pix_fmt yuv420p",
         "-c:a aac",
-        "-b:a 96k",                // Audio capping
+        "-b:a 96k",
         "-movflags +faststart",
         ...(codec === "libx265" ? ["-tag:v hvc1"] : []),
-        ...(codec === "libsvtav1" ? ["-svtav1-params tune=0"] : [])
+        ...(codec === "libsvtav1" ? ["-svtav1-params tune=0"] : []),
       ])
-      .size("?x1080")
       .on("progress", (p) => {
-        if (p.percent) {
-          console.log(
-            `⏳ ${codec} CRF ${crf}: ${p.percent.toFixed(1)}%`
-          );
-        }
+        if (p.percent) console.log(`⏳ ${codec} CRF ${crf}: ${p.percent.toFixed(1)}%`);
       })
       .on("end", () => {
-        const timeTaken =
-          ((Date.now() - startTime) / 1000).toFixed(2);
-
-        console.log(
-          `✅ COMPRESSION DONE | ${codec} | CRF ${crf} | ${timeTaken}s`
-        );
-
+        console.log(`✅ COMPRESSION DONE | ${((Date.now() - startTime) / 1000).toFixed(2)}s`);
         resolve(outputPath);
       })
       .on("error", (err) => {
-        console.log(
-          `❌ COMPRESSION FAILED | ${codec} | CRF ${crf}:`,
-          err.message
-        );
-
+        console.log(`❌ COMPRESSION FAILED:`, err.message);
         reject(err);
       })
       .save(outputPath);

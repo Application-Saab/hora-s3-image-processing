@@ -1045,19 +1045,13 @@ async function safeDeleteLocalFile(filePath) {
 }
 
 
-const SUPPLIER_CONCURRENCY = 1; // ek saath kitni images process hongi
-// ---------------------------------------------------------------------------
-// MAIN
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------
-// PROCESSING
-// ---------------------------------------------------------------------
-async function processSupplierS3Folder({
-  folderId,
-  folderName,
-  userId,
-  subFolderId,
-}) {
+const SUPPLIER_CONCURRENCY = 1; // video x265 heavy hai, 1 hi rakho
+const SUPPLIER_VIDEO_CRF = 22;
+const VIDEO_PART_SIZE = 25 * 1024 * 1024; // 25MB chunks
+const VIDEO_QUEUE_SIZE = 3;               // 3 parallel
+const PROCESSED_PREFIXES = ["thumb_", "2880_", "1080_", "clip_"];
+
+async function processSupplierS3Folder({ folderId, folderName, userId, subFolderId }) {
   const lockKey = String(folderId);
 
   if (activeSupplierFolders.has(lockKey)) {
@@ -1070,68 +1064,50 @@ async function processSupplierS3Folder({
   try {
     console.log(`🚀 SUPPLIER PROCESSING START | folder: ${folderName}`);
 
-    await FolderModel.updateOne(
-      { _id: folderId },
-      { $set: { status: "processing" } }
-    );
+    await FolderModel.updateOne({ _id: folderId }, { $set: { status: "processing" } });
 
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
-    // ----------------------------------------------------------------
-    // 1. S3 me jo originals bache hain wahi "pending queue" hain
-    //    (thumb_/2880_/clip_ getS3FolderFiles me already filter hote hain)
-    // ----------------------------------------------------------------
     const s3Objects = await getS3FolderFiles(folderName);
 
-    console.log("🔍 S3 OBJECTS:", s3Objects);
-    console.log("🔍 S3 OBJECT COUNT:", s3Objects.length);
-
-    const imageFiles = [];
+    const mediaFiles = [];
     let skippedCount = 0;
 
     for (const obj of s3Objects) {
-      if (getMediaTypeFromKey(obj.Key) !== "image") {
+      const type = getMediaTypeFromKey(obj.Key);
+
+      if (type !== "image" && type !== "video") {
         skippedCount++;
         continue;
       }
 
       const fileId = path.basename(obj.Key);
 
-      // subFolderId diya gaya hai to sirf usi subfolder ki files lo
+      // Already processed output files ko dobara queue me mat daalo
+      if (PROCESSED_PREFIXES.some((p) => fileId.startsWith(p))) continue;
+
       if (subFolderId) {
-        const fileParts = path.parse(fileId).name.split("_");
-
-        // filename:
-        // subFolderId_fileId
-        const fileSubFolderId = fileParts[0];
-
-        if (String(fileSubFolderId) !== String(subFolderId)) {
-          continue;
-        }
+        const fileSubFolderId = path.parse(fileId).name.split("_")[0];
+        if (String(fileSubFolderId) !== String(subFolderId)) continue;
       }
 
-      imageFiles.push({
+      mediaFiles.push({
         key: obj.Key,
         fileId,
         baseId: path.parse(fileId).name,
+        type,
       });
     }
 
-    // Ek hi query me saari already-done files (per-file findOne nahi)
     const doneDocs = await WebLink.find({ mainFolderId: folderId, status: "done" })
       .select("fileId")
       .lean();
     const doneIds = new Set(doneDocs.map((d) => d.fileId));
 
-    console.log(
-      `📦 Pending originals: ${imageFiles.length} | Skipped (non-image): ${skippedCount}`
-    );
+    console.log(`📦 Pending: ${mediaFiles.length} | Skipped: ${skippedCount}`);
 
-    // ----------------------------------------------------------------
-    // 2. Ek image process
-    // ----------------------------------------------------------------
+    // ---------------------------- IMAGE (same as before) ----------------------------
     async function processImage({ key: originalKey, fileId, baseId }) {
-      // DB me done hai par pichhli baar original delete fail hua tha
       if (doneIds.has(fileId)) {
         await deleteS3Object(originalKey);
         return "cleaned";
@@ -1149,19 +1125,9 @@ async function processSupplierS3Folder({
 
         await resizeImage(localOriginal, local2880, 2880, rotation);
 
-        const res2880 = await uploadFileToS3(
-          local2880,
-          fileName2880,
-          folderName,
-          userId,
-          "image/jpeg"
-        );
+        const res2880 = await uploadFileToS3(local2880, fileName2880, folderName, userId, "image/jpeg");
+        if (!res2880?.Key) throw new Error("S3 upload did not return Key for 2880 image");
 
-        if (!res2880?.Key) {
-          throw new Error("S3 upload did not return Key for 2880 image");
-        }
-
-        // DB: sirf required fields
         await WebLink.updateOne(
           { fileId, mainFolderId: folderId },
           {
@@ -1174,19 +1140,15 @@ async function processSupplierS3Folder({
               originalKey: res2880.Key,
               status: "done",
             },
-            ...(subFolderId
-              ? { $addToSet: { folderIds: subFolderId } }
-              : {}),
+            ...(subFolderId ? { $addToSet: { folderIds: subFolderId } } : {}),
           },
           { upsert: true }
         );
 
-        // Original S3 se delete (sirf DB done hone ke baad)
         if (originalKey !== res2880.Key) {
           try {
             await deleteS3Object(originalKey);
           } catch (delErr) {
-            // Next run me "cleaned" path se delete ho jayega
             console.error(`⚠️ Original delete failed: ${originalKey}`, delErr.message);
           }
         }
@@ -1198,23 +1160,96 @@ async function processSupplierS3Folder({
       }
     }
 
-    // ----------------------------------------------------------------
-    // 3. Retry + concurrency pool
-    // ----------------------------------------------------------------
+    // ---------------------------- VIDEO (new) ----------------------------
+    async function processVideo({ key: originalKey, fileId, baseId }) {
+      if (doneIds.has(fileId)) {
+        await deleteS3Object(originalKey);
+        return "cleaned";
+      }
+
+      const clipFileName = `clip_${baseId}.mp4`;
+      const compressedFileName = `1080_${baseId}.mp4`;
+
+      const localOriginal = path.join(tempDir, fileId);
+      const localClip = path.join(tempDir, clipFileName);
+      const localCompressed = path.join(tempDir, compressedFileName);
+
+      try {
+        await downloadS3ObjectToFile(originalKey, localOriginal);
+
+        const duration = await getVideoDuration(localOriginal);
+
+        // 1. 3 second clip
+        await generateVideoPreview(localOriginal, localClip, 3, 0);
+
+        // 2. Compress: CRF 22 + H265 + max 1080p
+        await compressVideo(localOriginal, localCompressed, SUPPLIER_VIDEO_CRF, "libx265");
+
+        // 3. S3 upload: 25MB chunks, 3 parallel
+        const uploadOpts = { partSize: VIDEO_PART_SIZE, queueSize: VIDEO_QUEUE_SIZE };
+
+        const resClip = await uploadVideoParts(
+          localClip, clipFileName, folderName, "video/mp4", uploadOpts
+        );
+        const resVideo = await uploadVideoParts(
+          localCompressed, compressedFileName, folderName, "video/mp4", uploadOpts
+        );
+
+        if (!resClip?.Key || !resVideo?.Key) {
+          throw new Error("S3 upload did not return Key for video/clip");
+        }
+
+        // 4. DB (dono upload hone ke baad hi)
+        await WebLink.updateOne(
+          { fileId, mainFolderId: folderId },
+          {
+            $set: {
+              fileId,
+              mainFolderId: folderId,
+              orderById: userId,
+              type: "video",
+              originalUrl: resVideo.Location || null,
+              originalKey: resVideo.Key,
+              videoClipUrl: resClip.Location || null,
+              videoClipKey: resClip.Key,
+              duration: duration || "",
+              status: "done",
+            },
+            ...(subFolderId ? { $addToSet: { folderIds: subFolderId } } : {}),
+          },
+          { upsert: true }
+        );
+
+        // 5. Original delete (DB done ke baad)
+        if (originalKey !== resVideo.Key) {
+          try {
+            await deleteS3Object(originalKey);
+          } catch (delErr) {
+            console.error(`⚠️ Original delete failed: ${originalKey}`, delErr.message);
+          }
+        }
+
+        return "done";
+      } finally {
+        await safeDeleteLocalFile(localOriginal);
+        await safeDeleteLocalFile(localClip);
+        await safeDeleteLocalFile(localCompressed);
+      }
+    }
+
+    // ---------------------------- Retry + pool ----------------------------
     const stats = { done: 0, cleaned: 0, failed: 0 };
     const failedFiles = [];
 
     async function processWithRetry(file) {
       for (let attempt = 0; attempt <= SUPPLIER_MAX_RETRIES; attempt++) {
         try {
-          const status = await processImage(file);
+          const status =
+            file.type === "video" ? await processVideo(file) : await processImage(file);
           stats[status]++;
           return;
         } catch (err) {
-          console.error(
-            `❌ ${file.fileId} attempt ${attempt + 1} failed:`,
-            err.message
-          );
+          console.error(`❌ ${file.fileId} attempt ${attempt + 1} failed:`, err.message);
           if (attempt === SUPPLIER_MAX_RETRIES) {
             stats.failed++;
             failedFiles.push({ fileName: file.fileId, error: err.message });
@@ -1225,40 +1260,30 @@ async function processSupplierS3Folder({
 
     let cursor = 0;
     const worker = async () => {
-      while (cursor < imageFiles.length) {
-        const file = imageFiles[cursor++];
+      while (cursor < mediaFiles.length) {
+        const file = mediaFiles[cursor++];
         await processWithRetry(file);
       }
     };
 
     await Promise.all(
-      Array.from(
-        { length: Math.min(SUPPLIER_CONCURRENCY, imageFiles.length) },
-        worker
-      )
+      Array.from({ length: Math.min(SUPPLIER_CONCURRENCY, mediaFiles.length) }, worker)
     );
 
-    // ----------------------------------------------------------------
-    // 4. Folder status
-    //    Failed files S3 me hi bachi rehti hain, Done dobara dabane par retry hongi
-    // ----------------------------------------------------------------
     await FolderModel.updateOne(
       { _id: folderId },
       { $set: { status: stats.failed === 0 ? "done" : "failed" } }
     );
 
     console.log("===== SUPPLIER FINAL REPORT =====", stats, failedFiles);
-
     return { success: true, ...stats, failedFiles };
   } catch (error) {
     console.error("❌ Error in processSupplierS3Folder:", error);
-
     try {
       await FolderModel.updateOne({ _id: folderId }, { $set: { status: "failed" } });
     } catch (e) {
       console.error("❌ Could not mark folder as failed:", e.message);
     }
-
     throw error;
   } finally {
     activeSupplierFolders.delete(lockKey);
