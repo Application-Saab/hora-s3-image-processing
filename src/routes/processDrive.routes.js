@@ -1387,39 +1387,50 @@ router.delete("/delete-s3-image", async (req, res) => {
   }
 });
 
+// =====================================================================
+// SUPPLIER ONLY: upload done + S3 processing
+// - Order model / WhatsApp / Face API / thumb / video: kuch nahi
+// - Sirf 2880 image S3 + DB me jayegi, original S3 se delete hoga
+// =====================================================================
+
+
+
+// Same folder par parallel processing na chale
+const activeSupplierFolders = new Set();
+
+// ---------------------------------------------------------------------
+// ROUTE
+// body: { folderName, userId, subFolderId? }
+// ---------------------------------------------------------------------
 router.post("/supplier-upload-done", async (req, res) => {
   try {
-    const { folderId, folderName, orderId } = req.body;
+    const { folderName, userId, subFolderId } = req.body;
 
-    if (!folderId) {
+    if (!folderName || !userId) {
       return res.status(422).json({
         success: false,
-        message: "folderId is required",
+        message: "folderName and userId are required",
       });
     }
 
-    if (!folderName) {
-      return res.status(422).json({
+    const cleanFolderName = String(folderName).replace(/\/+$/, "");
+    const supplierId = String(userId);
+
+    // Guard: supplier sirf apna recentWork folder process kar sakta hai
+    if (cleanFolderName !== `recentWork_${supplierId}`) {
+      return res.status(403).json({
         success: false,
-        message: "folderName is required",
+        message: "Invalid folder for this supplier",
       });
     }
 
-    // ==========================================
-    // MARK SUPPLIER UPLOAD AS DONE
-    // ==========================================
-
-    const folder = await Folder.findByIdAndUpdate(
-      folderId,
-      {
-        $set: {
-          isFromSupplierDone: true,
-        },
-      },
-      {
-        new: true,
-      }
-    );
+    // Folder DB se lo (folderId frontend se nahi aata)
+    const folder = await Folder.findOne({
+      folderName: cleanFolderName,
+      customerId: supplierId,
+    })
+      .select("_id")
+      .lean();
 
     if (!folder) {
       return res.status(404).json({
@@ -1428,46 +1439,42 @@ router.post("/supplier-upload-done", async (req, res) => {
       });
     }
 
-    console.log(
-      "✅ isFromSupplierDone set to true:",
-      folderId
-    );
+    const folderId = String(folder._id);
 
-    // ==========================================
-    // START S3 PROCESSING
-    // ==========================================
+    // Pehle se chal raha hai to dobara start nahi karna
+    if (activeSupplierFolders.has(folderId)) {
+      return res.status(202).json({
+        success: true,
+        alreadyRunning: true,
+        message: "Processing is already running for this folder",
+      });
+    }
 
-    processSupplierS3Folder(
-      folderId,
-      folderName,
-      orderId,
-    ).catch((error) => {
-      console.error(
-        "❌ Supplier S3 background processing failed:",
-        error
+    // isFromSupplierDone schema me subFolders ke andar hai (top level par nahi)
+    if (subFolderId) {
+      await Folder.updateOne(
+        { _id: folderId, "subFolders._id": String(subFolderId) },
+        { $set: { "subFolders.$.isFromSupplierDone": true } }
       );
+    }
+
+    // Background processing (lock function ke start me hi lag jata hai)
+    processSupplierS3Folder({
+      folderId,
+      folderName: cleanFolderName,
+      userId: supplierId,
+      subFolderId: subFolderId ? String(subFolderId) : null,
+    }).catch((error) => {
+      console.error("❌ Supplier S3 background processing failed:", error);
     });
 
-    // ==========================================
-    // RESPONSE
-    // ==========================================
-
-    return res.status(200).json({
+    return res.status(202).json({
       success: true,
       message: "Supplier upload marked as done and processing started",
-      data: {
-        folderId: folder._id,
-        isFromSupplierDone:
-          folder.isFromSupplierDone,
-      },
+      data: { folderId },
     });
-
   } catch (error) {
-    console.error(
-      "❌ Supplier upload done error:",
-      error
-    );
-
+    console.error("❌ Supplier upload done error:", error);
     return res.status(500).json({
       success: false,
       message: "Something went wrong",

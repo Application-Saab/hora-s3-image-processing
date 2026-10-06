@@ -1044,497 +1044,212 @@ async function safeDeleteLocalFile(filePath) {
   }
 }
 
+
+const SUPPLIER_CONCURRENCY = 1; // ek saath kitni images process hongi
 // ---------------------------------------------------------------------------
 // MAIN
 // ---------------------------------------------------------------------------
-async function processSupplierS3Folder(folderId, s3FolderPath, orderId) {
+// ---------------------------------------------------------------------
+// PROCESSING
+// ---------------------------------------------------------------------
+async function processSupplierS3Folder({
+  folderId,
+  folderName,
+  userId,
+  subFolderId,
+}) {
   const lockKey = String(folderId);
 
   if (activeSupplierFolders.has(lockKey)) {
-    console.log(`⏩ Supplier processing already running for folder: ${lockKey}`);
     return { success: false, alreadyRunning: true };
   }
   activeSupplierFolders.add(lockKey);
 
+  const tempDir = path.join(__dirname, "tempUploads");
+
   try {
-    console.log("==================================================");
-    console.log("🚀 START SUPPLIER S3 PROCESSING");
-    console.log(`Folder ID: ${folderId} | Order ID: ${orderId}`);
-    console.log("==================================================");
-
-    // ------------------------------------------------------------------
-    // 1. DB se details (jo params me nahi aayi wo model se)
-    // ------------------------------------------------------------------
-    const folderDoc = await FolderModel.findById(folderId).lean();
-    if (!folderDoc) throw new Error(`Folder with ID ${folderId} not found`);
-
-    const orderDoc = await OrderModel.findOne({ order_id: Number(orderId) }).lean();
-    if (!orderDoc) throw new Error(`Order with order_id ${orderId} not found`);
-
-    const customerId = String(folderDoc.customerId); // Folder model
-    const phoneNo = orderDoc.phone_no || "";          // Order model
-    const orderByName = phoneNo;                      // drive flow me bhi phoneNo hi tha
-    const mainFolderId = String(folderId);
-    const orderIdStr = String(orderId);
-
-    const folderName = String(s3FolderPath).replace(/\/+$/, "");
-    const folderPath = folderName; // drive me folderPath = folderName tha
-
-    if (folderDoc.folderName && folderDoc.folderName !== folderName) {
-      console.warn(
-        `⚠️ folderName mismatch. DB: ${folderDoc.folderName} | Param: ${folderName}`
-      );
-    }
-
-    const wasAlreadyDone = folderDoc.status === "done";
+    console.log(`🚀 SUPPLIER PROCESSING START | folder: ${folderName}`);
 
     await FolderModel.updateOne(
       { _id: folderId },
       { $set: { status: "processing" } }
     );
 
-    const tempDir = path.join(__dirname, "tempUploads");
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
-    // ------------------------------------------------------------------
-    // 2. S3 se original files ki list (thumb_/2880_/clip_ already filter hote hain)
-    // ------------------------------------------------------------------
+    // ----------------------------------------------------------------
+    // 1. S3 me jo originals bache hain wahi "pending queue" hain
+    //    (thumb_/2880_/clip_ getS3FolderFiles me already filter hote hain)
+    // ----------------------------------------------------------------
     const s3Objects = await getS3FolderFiles(folderName);
 
-    const mediaFiles = [];
-    let unsupportedCount = 0;
+    console.log("🔍 S3 OBJECTS:", s3Objects);
+    console.log("🔍 S3 OBJECT COUNT:", s3Objects.length);
+
+    const imageFiles = [];
+    let skippedCount = 0;
 
     for (const obj of s3Objects) {
-      const fileId = path.basename(obj.Key);
-      const type = getMediaTypeFromKey(obj.Key);
-
-      if (!type) {
-        unsupportedCount++;
-        console.log(`⚠️ Unsupported format, skipping: ${obj.Key}`);
+      if (getMediaTypeFromKey(obj.Key) !== "image") {
+        skippedCount++;
         continue;
       }
 
-      mediaFiles.push({
+      const fileId = path.basename(obj.Key);
+
+      // subFolderId diya gaya hai to sirf usi subfolder ki files lo
+      if (subFolderId) {
+        const fileParts = path.parse(fileId).name.split("_");
+
+        // filename:
+        // subFolderId_fileId
+        const fileSubFolderId = fileParts[0];
+
+        if (String(fileSubFolderId) !== String(subFolderId)) {
+          continue;
+        }
+      }
+
+      imageFiles.push({
         key: obj.Key,
-        fileId,                          // WebLink.fileId (uuid.ext)
-        baseId: path.parse(fileId).name, // thumb_/2880_/clip_ names ke liye (bina ext)
-        type,
+        fileId,
+        baseId: path.parse(fileId).name,
       });
     }
 
-    // Pehle ke run me jo images done ho chuki hain unka original S3 se delete ho chuka hota
-    // hai, isliye wo list me nahi aayengi. Unhe total me jod dete hain.
-    const listedIds = new Set(mediaFiles.map((f) => f.fileId));
-    const doneImagesBefore = await WebLink.find({
-      orderId: orderIdStr,
-      mainFolderId,
-      status: "done",
-      type: "image",
-    })
+    // Ek hi query me saari already-done files (per-file findOne nahi)
+    const doneDocs = await WebLink.find({ mainFolderId: folderId, status: "done" })
       .select("fileId")
       .lean();
-    const deletedOriginalsCount = doneImagesBefore.filter(
-      (d) => !listedIds.has(d.fileId)
-    ).length;
+    const doneIds = new Set(doneDocs.map((d) => d.fileId));
 
-    const totalMediaFiles = mediaFiles.length + deletedOriginalsCount;
-
-    console.log(`📦 Raw objects in S3: ${s3Objects.length}`);
-    console.log(`📦 Supported media files to look at: ${mediaFiles.length}`);
-    console.log(`📦 Already-done images (original deleted): ${deletedOriginalsCount}`);
-    console.log(`📦 Unsupported files: ${unsupportedCount}`);
-    console.log(`📦 TOTAL MEDIA: ${totalMediaFiles}`);
-
-    await OrderModel.findOneAndUpdate(
-      { order_id: orderDoc.order_id },
-      { $set: { "imageUploadCounts.totalFromDrive": totalMediaFiles } }
+    console.log(
+      `📦 Pending originals: ${imageFiles.length} | Skipped (non-image): ${skippedCount}`
     );
 
-    // ------------------------------------------------------------------
-    // 3. Counters (drive flow jaise)
-    // ------------------------------------------------------------------
-    const failedFiles = [];
-    let failCount = 0;
-    let uploadedImageCount = 0;
-    let faceApiBatchCount = 0;
-
-    // ------------------------------------------------------------------
-    // Face API helper (batch + last batch dono ke liye)
-    // ------------------------------------------------------------------
-    async function callFaceApi(isLastBatch) {
-      const formData = new FormData();
-      formData.append("folder_name", folderName);
-      formData.append("folderId", mainFolderId);
-      formData.append("userId", customerId);
-      formData.append("isLastBatch", isLastBatch ? "true" : "false");
-
-      return axios.post(
-        "https://horaservices.com/face-api/count-unique-persons",
-        formData,
-        {
-          headers: formData.getHeaders
-            ? formData.getHeaders()
-            : { "Content-Type": "multipart/form-data" },
-        }
-      );
-    }
-
-    // ------------------------------------------------------------------
-    // 4a. IMAGE: original download -> orientation -> thumb + 2880 -> S3 upload
-    //             -> WebLink done -> S3 se ORIGINAL DELETE
-    // ------------------------------------------------------------------
-    async function processImage(file) {
-      const { key: originalKey, fileId, baseId } = file;
+    // ----------------------------------------------------------------
+    // 2. Ek image process
+    // ----------------------------------------------------------------
+    async function processImage({ key: originalKey, fileId, baseId }) {
+      // DB me done hai par pichhli baar original delete fail hua tha
+      if (doneIds.has(fileId)) {
+        await deleteS3Object(originalKey);
+        return "cleaned";
+      }
 
       const localOriginal = path.join(tempDir, fileId);
-      const thumbLocal = path.join(tempDir, `thumb_${baseId}.webp`);
       const local2880 = path.join(tempDir, `2880_${baseId}.jpg`);
-
-      const thumbFileName = `thumb_${baseId}.webp`;
       const fileName2880 = `2880_${baseId}.jpeg`;
 
       try {
-        console.log(`⬇️ STEP 1 DOWNLOAD FROM S3: ${fileId}`);
         await downloadS3ObjectToFile(originalKey, localOriginal);
-        console.log(`✅ STEP 2 DOWNLOAD COMPLETED: ${fileId}`);
 
-        console.log(`STEP 3 ORIENTATION DETECTION: ${fileId}`);
-        const orientationResult = await detectImageOrientation(localOriginal);
-        const rotation = Number(orientationResult?.rotation || 0);
+        const orientation = await detectImageOrientation(localOriginal);
+        const rotation = Number(orientation?.rotation || 0);
 
-        console.log("==============================================");
-        console.log("IMAGE:", fileId);
-        console.log("PYTHON ROTATION:", rotation);
-        console.log("PYTHON CONFIDENCE:", orientationResult?.confidence);
-        console.log("PYTHON FACES:", orientationResult?.faces);
-        console.log("PYTHON REASON:", orientationResult?.reason);
-        console.log("==============================================");
+        await resizeImage(localOriginal, local2880, 2880, rotation);
 
-        console.log(`STEP 4 GENERATING VARIATIONS: ${fileId}`);
-        await Promise.all([
-          generateThumbnail(localOriginal, thumbLocal, rotation),
-          resizeImage(localOriginal, local2880, 2880, rotation),
-        ]);
-        console.log(`STEP 5 VARIATIONS GENERATED: ${fileId}`);
+        const res2880 = await uploadFileToS3(
+          local2880,
+          fileName2880,
+          folderName,
+          userId,
+          "image/jpeg"
+        );
 
-        const [thumb, res2880] = await Promise.all([
-          uploadFileToS3(thumbLocal, thumbFileName, folderPath, phoneNo, "image/webp"),
-          uploadFileToS3(local2880, fileName2880, folderPath, phoneNo, "image/jpeg"),
-        ]);
-        console.log(`STEP 6 S3 UPLOADS COMPLETE: ${fileId}`);
-
-        if (!res2880?.Key || !thumb?.Key) {
-          throw new Error("S3 upload did not return Key for thumb / 2880");
+        if (!res2880?.Key) {
+          throw new Error("S3 upload did not return Key for 2880 image");
         }
 
-        console.log(`STEP 7 DB UPDATE START: ${fileId}`);
+        // DB: sirf required fields
         await WebLink.updateOne(
-          { fileId, orderId: orderIdStr },
+          { fileId, mainFolderId: folderId },
           {
             $set: {
               fileId,
-              orderId: orderIdStr,
-
-              orderById: customerId,
-              orderByName,
-
+              mainFolderId: folderId,
+              orderById: userId,
               type: "image",
-
-              originalUrl: res2880?.Location || null,
-              originalKey: res2880?.Key,
-
-              thumbnailImageUrl: thumb?.Location || null,
-              thumbnailKey: thumb?.Key || null,
-
-              videoClipUrl: null,
-              videoClipKey: null,
-
-              mainFolderId,
+              originalUrl: res2880.Location || null,
+              originalKey: res2880.Key,
               status: "done",
             },
+            ...(subFolderId
+              ? { $addToSet: { folderIds: subFolderId } }
+              : {}),
           },
-          { upsert: false }
+          { upsert: true }
         );
-        console.log(`STEP 8 DB UPDATE DONE: ${fileId}`);
 
-        // ---- Ab supplier ka ORIGINAL S3 se delete (sirf DB done hone ke baad) ----
-        if (originalKey !== res2880.Key && originalKey !== thumb.Key) {
+        // Original S3 se delete (sirf DB done hone ke baad)
+        if (originalKey !== res2880.Key) {
           try {
             await deleteS3Object(originalKey);
-            console.log(`🗑️ STEP 9 S3 ORIGINAL DELETED: ${originalKey}`);
           } catch (delErr) {
-            // File already done hai, isliye fail nahi karna. Next run me cleanup ho jayega.
-            console.error(`⚠️ S3 ORIGINAL DELETE FAILED: ${originalKey}`, delErr.message);
+            // Next run me "cleaned" path se delete ho jayega
+            console.error(`⚠️ Original delete failed: ${originalKey}`, delErr.message);
           }
         }
 
-        uploadedImageCount++;
-
-        if (uploadedImageCount % 20 === 0) {
-          faceApiBatchCount++;
-          try {
-            console.log(`Calling Face API for batch ${faceApiBatchCount}`);
-            await callFaceApi(false);
-          } catch (err) {
-            console.error("Face API batch error", err.message);
-          }
-        }
-
-        return { type: "image", fileName: fileId };
+        return "done";
       } finally {
         await safeDeleteLocalFile(localOriginal);
-        await safeDeleteLocalFile(thumbLocal);
         await safeDeleteLocalFile(local2880);
       }
     }
 
-    // ------------------------------------------------------------------
-    // 4b. VIDEO: original S3 me hi rehta hai (re-upload nahi), sirf clip banti hai
-    // ------------------------------------------------------------------
-    async function processVideo(file) {
-      const { key: originalKey, fileId, baseId } = file;
+    // ----------------------------------------------------------------
+    // 3. Retry + concurrency pool
+    // ----------------------------------------------------------------
+    const stats = { done: 0, cleaned: 0, failed: 0 };
+    const failedFiles = [];
 
-      const localOriginal = path.join(tempDir, fileId);
-      const clipLocal = path.join(tempDir, `clip_${baseId}.mp4`);
-
-      try {
-        console.log(`⬇️ STEP 1 DOWNLOAD VIDEO FROM S3: ${fileId}`);
-        await downloadS3ObjectToFile(originalKey, localOriginal);
-        console.log(`✅ STEP 2 DOWNLOAD COMPLETED: ${fileId}`);
-
-        console.log(`STEP 3 GENERATE PREVIEW CLIP: ${fileId}`);
-        await generateVideoPreview(localOriginal, clipLocal, 3);
-        const durationVal = await getVideoDuration(localOriginal);
-        console.log(`STEP 4 CLIP GENERATED: ${fileId}`);
-
-        console.log(`STEP 5 UPLOAD CLIP TO S3: ${fileId}`);
-        const clip = await uploadFileToS3(
-          clipLocal,
-          path.basename(clipLocal),
-          folderPath,
-          phoneNo,
-          "video/mp4"
-        );
-        console.log(`STEP 6 CLIP UPLOAD COMPLETE: ${fileId}`);
-
-        if (!clip?.Key) {
-          throw new Error("S3 upload did not return Key for clip");
-        }
-
-        await WebLink.updateOne(
-          { fileId, orderId: orderIdStr },
-          {
-            $set: {
-              fileId,
-              orderId: orderIdStr,
-
-              orderById: customerId,
-              orderByName,
-
-              type: "video",
-
-              // Original video wahi hai jo supplier ne S3 me upload kiya (delete nahi hota)
-              originalUrl: buildS3Url(originalKey),
-              originalKey: originalKey,
-
-              thumbnailImageUrl: null,
-              thumbnailKey: null,
-
-              videoClipUrl: clip?.Location || null,
-              videoClipKey: clip?.Key || null,
-              duration: durationVal,
-
-              mainFolderId,
-              status: "done",
-            },
-          },
-          { upsert: false }
-        );
-        console.log(`STEP 7 VIDEO DB UPDATE DONE: ${fileId}`);
-
-        return { type: "video", fileName: fileId };
-      } finally {
-        await safeDeleteLocalFile(localOriginal);
-        await safeDeleteLocalFile(clipLocal);
-      }
-    }
-
-    // ------------------------------------------------------------------
-    // 5. Ek file: skip check + placeholder + retry loop (drive processFile jaisa)
-    // ------------------------------------------------------------------
-    async function processFile(file, index) {
-      const { key: originalKey, fileId, type } = file;
-      const logPrefix = `[File ${index + 1}/${mediaFiles.length}] [${fileId}]`;
-
-      console.log("\n--------------------------------------------------");
-      console.log(`🚀 ${logPrefix} START (${type})`);
-
-      const existingFile = await WebLink.findOne({ fileId, orderId: orderIdStr });
-
-      // Already uploaded
-      if (existingFile?.status === "done") {
-        console.log(`⏩ FILE ALREADY DONE: ${fileId}`);
-
-        // Pichhle run me image ka original delete fail hua ho to ab cleanup kar do
-        if (type === "image") {
-          try {
-            await deleteS3Object(originalKey);
-            console.log(`🗑️ LEFTOVER ORIGINAL CLEANED: ${originalKey}`);
-          } catch (e) {
-            console.error(`⚠️ leftover cleanup failed: ${originalKey}`, e.message);
-          }
-        }
-        return { status: "skipped", fileName: fileId };
-      }
-
-      // NOTE: "uploading" wali file ko yaha skip nahi karte, kyunki upar lock hai
-      // (same folder parallel nahi chalta). Matlab "uploading" pichhle crash ki bachi hui hai.
-      if (existingFile?.status === "failed") {
-        console.log(`🔄 RETRYING FAILED FILE: ${fileId}`);
-      } else if (existingFile?.status === "uploading") {
-        console.log(`🔄 STALE UPLOADING FILE, RETRYING: ${fileId}`);
-      }
-
-      // Placeholder create / status = uploading
-      await WebLink.findOneAndUpdate(
-        { fileId, orderId: orderIdStr },
-        {
-          $set: { status: "uploading" },
-          $setOnInsert: { mainFolderId, retryCount: 0 },
-        },
-        { upsert: true, new: true }
-      );
-
+    async function processWithRetry(file) {
       for (let attempt = 0; attempt <= SUPPLIER_MAX_RETRIES; attempt++) {
         try {
-          const result =
-            type === "image" ? await processImage(file) : await processVideo(file);
-
-          return { status: "done", ...result };
+          const status = await processImage(file);
+          stats[status]++;
+          return;
         } catch (err) {
-          console.error(`❌ ${logPrefix} ERROR (attempt ${attempt + 1}):`, err.message);
-
-          await WebLink.updateOne(
-            { fileId, orderId: orderIdStr },
-            { $set: { status: "failed" }, $inc: { retryCount: 1 } }
+          console.error(
+            `❌ ${file.fileId} attempt ${attempt + 1} failed:`,
+            err.message
           );
-
-          if (attempt < SUPPLIER_MAX_RETRIES) {
-            console.log(`🔄 RETRY START ${fileId} | Attempt ${attempt + 2}`);
-            await WebLink.updateOne(
-              { fileId, orderId: orderIdStr },
-              { $set: { status: "uploading" } }
-            );
-          } else {
-            console.log(`Max retries reached for ${fileId}`);
-            failedFiles.push({ fileName: fileId, error: err.message });
-            failCount++;
-            return { status: "failed", fileName: fileId, error: err.message };
+          if (attempt === SUPPLIER_MAX_RETRIES) {
+            stats.failed++;
+            failedFiles.push({ fileName: file.fileId, error: err.message });
           }
         }
       }
     }
 
-    // ------------------------------------------------------------------
-    // 6. Ek ek karke sequential processing (drive me MAX_CONCURRENT = 1 tha)
-    // ------------------------------------------------------------------
-    const results = [];
-    for (let i = 0; i < mediaFiles.length; i++) {
-      try {
-        const result = await processFile(mediaFiles[i], i);
-        results.push(result);
-      } catch (err) {
-        // processFile ke andar ka unexpected error (jaise DB down) — baaki files chalti rahein
-        console.error(`❌ Unexpected error for ${mediaFiles[i].fileId}:`, err.message);
-        failCount++;
-        failedFiles.push({ fileName: mediaFiles[i].fileId, error: err.message });
-        results.push({ status: "failed", fileName: mediaFiles[i].fileId, error: err.message });
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < imageFiles.length) {
+        const file = imageFiles[cursor++];
+        await processWithRetry(file);
       }
-    }
+    };
 
-    console.log("\n🎉 ALL FILES LOOPED");
-
-    // ------------------------------------------------------------------
-    // 7. Final report
-    // ------------------------------------------------------------------
-    const finalSuccessCount = await WebLink.countDocuments({
-      orderId: orderIdStr,
-      mainFolderId,
-      status: "done",
-    });
-
-    console.log("===== FINAL REPORT =====");
-    console.log("Total media:", totalMediaFiles);
-    console.log("Successfully Uploaded (done in DB):", finalSuccessCount);
-    console.log("Failed:", failCount);
-    console.log("Failed files:", failedFiles);
-    console.log("========================");
-
-    // Last batch face count (drive jaisa: max 5 files tak ki tolerance)
-    if (finalSuccessCount >= totalMediaFiles - 5) {
-      try {
-        console.log("All files uploaded. Starting face count (last batch)...");
-        await callFaceApi(true);
-      } catch (error) {
-        console.error(
-          "❌ Face Count API Error:",
-          error?.response?.data || error.message
-        );
-      }
-    }
-
-    const updatedOrder = await OrderModel.findOneAndUpdate(
-      { order_id: orderDoc.order_id },
-      {
-        $set: {
-          "imageUploadCounts.totalFromDrive": totalMediaFiles,
-          "imageUploadCounts.totalWeblink": finalSuccessCount,
-          "imageUploadCounts.AllImagesUploadedAt": new Date(),
-        },
-      },
-      { new: true }
+    await Promise.all(
+      Array.from(
+        { length: Math.min(SUPPLIER_CONCURRENCY, imageFiles.length) },
+        worker
+      )
     );
 
+    // ----------------------------------------------------------------
+    // 4. Folder status
+    //    Failed files S3 me hi bachi rehti hain, Done dobara dabane par retry hongi
+    // ----------------------------------------------------------------
     await FolderModel.updateOne(
       { _id: folderId },
-      { $set: { status: "done" } }
+      { $set: { status: stats.failed === 0 ? "done" : "failed" } }
     );
-    console.log(`Folder status set to "done" for mainFolderId: ${mainFolderId}`);
 
-    // ------------------------------------------------------------------
-    // 8. WhatsApp (sirf tab jab kuch naya process hua ya folder pehle done nahi tha,
-    //    taaki dobara button dabane par customer ko duplicate message na jaye)
-    // ------------------------------------------------------------------
-    const newlyDoneCount = results.filter((r) => r?.status === "done").length;
-    const shouldNotify = !(wasAlreadyDone && newlyDoneCount === 0);
+    console.log("===== SUPPLIER FINAL REPORT =====", stats, failedFiles);
 
-    if (shouldNotify) {
-      try {
-        const folder = await FolderModel.findById(folderId).lean();
-        const updatedOrderId = (updatedOrder?.order_id ?? orderDoc.order_id) + 10800;
-
-        const whatsappLink = folder?.shortCode
-          ? `https://horaservices.com/eventcapsule/share/${folder.shortCode}`
-          : updatedOrder?.orderWebLink;
-
-        if (updatedOrder?.phone_no) {
-          await sendWhatsApp(updatedOrder.phone_no, updatedOrderId, whatsappLink);
-        }
-      } catch (err) {
-        console.error("❌ WhatsApp send error:", err.message);
-      }
-    } else {
-      console.log("ℹ️ Folder was already done and nothing new processed. WhatsApp skipped.");
-    }
-
-    return {
-      success: true,
-      totalMediaFiles,
-      successCount: finalSuccessCount,
-      failCount,
-      failedFiles,
-      results,
-    };
+    return { success: true, ...stats, failedFiles };
   } catch (error) {
     console.error("❌ Error in processSupplierS3Folder:", error);
 
