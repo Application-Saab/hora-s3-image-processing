@@ -4,6 +4,7 @@ const { handleDriveFolderUpload, uploadSingleImage, processSupplierS3Folder } = 
 const Folder = require("../models/folder");
 const fs = require("fs");
 const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVideoDuration, resizeImage } = require("../utils/auth.util");
+const { initiateMultipartUpload, completeMultipartUpload } = require('./videoUpload');
 const multer = require("multer");
 const path = require("path");
 const WebLink = require("../models/weblink-images")
@@ -1270,6 +1271,9 @@ router.post("/resize-and-clean-original-images", async (req, res) => {
     });
   }
 });
+
+router.post('/initiate', initiateMultipartUpload);
+router.post('/complete', completeMultipartUpload);
 
 
 router.post("/get-event-capsule-presigned-url", async (req, res) => {
