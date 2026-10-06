@@ -981,18 +981,6 @@ async function getS3FolderFiles(folderPrefix) {
   return allFiles;
 }
 
-// ============================================================================
-// SUPPLIER S3 FLOW
-// ----------------------------------------------------------------------------
-// - getS3FolderFiles(...) ko waisa hi rehne do (tumhara existing helper).
-// - Ye poora block us file me daalo jisme handleDriveFolderUpload hai, taaki ye
-//   sab helpers mil sakein: axios, fs, path, FormData, s3, BUCKET_NAME,
-//   WebLink, OrderModel, FolderModel, detectImageOrientation, generateThumbnail,
-//   resizeImage, uploadFileToS3, deleteFileWithRetry, generateVideoPreview,
-//   getVideoDuration, sendWhatsApp.
-// - Purana processSupplierS3Folder delete kar do (ye uska replacement hai).
-// ============================================================================
-
 const { pipeline } = require("stream/promises");
 
 const SUPPLIER_IMAGE_EXTS = new Set([
@@ -1002,15 +990,10 @@ const SUPPLIER_VIDEO_EXTS = new Set([
   ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v",
 ]);
 
-// Drive jaisa: 1 first attempt + 2 retries = total 3 attempts
 const SUPPLIER_MAX_RETRIES = 2;
 
-// Same folder ka processing 2 baar parallel na chale (button double click etc.)
 const activeSupplierFolders = new Set();
 
-// ---------------------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------------------
 function getMediaTypeFromKey(key) {
   const ext = path.extname(key).toLowerCase();
   if (SUPPLIER_IMAGE_EXTS.has(ext)) return "image";
