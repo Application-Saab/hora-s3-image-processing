@@ -147,9 +147,9 @@ const uploadVideoParts = async (
       Body: fileStream,
       ContentType: contentType,
     },
-    partSize,                    // 25MB chunks
-    queueSize,                   // 3 parallel
-    leavePartsOnError: false,    // fail hua to adhure parts S3 se clean ho jayenge
+    partSize,                    
+    queueSize,                   
+    leavePartsOnError: false,   
   });
 
   parallelUploadToS3.on("httpUploadProgress", (progress) => {
@@ -162,7 +162,6 @@ const uploadVideoParts = async (
   const result = await parallelUploadToS3.done();
   console.log(`✅ S3 UPLOAD SUCCESS: ${fileName}`);
 
-  // Key/Location hamesha mile, isliye fallback laga diya
   return {
     ...result,
     Key: result.Key || key,
@@ -187,7 +186,7 @@ const compressVideo = (
 
     ffmpeg(inputPath)
       .videoCodec(codec)
-      .videoFilters("scale=-2:'min(1080,ih)'")   // max 1080p, upscale nahi
+      .videoFilters("scale=-2:'min(1080,ih)'")   
       .outputOptions([
         `-crf ${crf}`,
         presetOption,
