@@ -6,6 +6,16 @@ const multer = require("multer");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
 require("dotenv").config();
+const { Upload } = require("@aws-sdk/lib-storage");
+const { S3Client } = require("@aws-sdk/client-s3");
+
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
 
 // AWS S3 config
 const s3 = new AWS.S3({
@@ -108,6 +118,100 @@ const deleteFileWithRetry = async (filePath, retries = 3, delay = 100) => {
 
 
 
+// S3 High-Performance Multipart Upload Utility
+const uploadVideoParts = async (
+  filePath,
+  fileName,
+  folderName = "test_uploads",
+  contentType = "video/mp4",
+  { partSize = 25 * 1024 * 1024, queueSize = 3 } = {}
+) => {
+  console.log(`\n☁️  STARTING S3 MULTIPART UPLOAD: ${fileName}`);
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`File not found at: ${filePath}`);
+  }
+
+  const stats = fs.statSync(filePath);
+  console.log(`📦 Upload File size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+
+  const bucket = process.env.S3_BUCKET_NAME || "photography-hora";
+  const key = `${folderName}/${fileName}`;
+  const fileStream = fs.createReadStream(filePath);
+
+  const parallelUploadToS3 = new Upload({
+    client: s3Client,
+    params: {
+      Bucket: bucket,
+      Key: key,
+      Body: fileStream,
+      ContentType: contentType,
+    },
+    partSize,                    
+    queueSize,                   
+    leavePartsOnError: false,   
+  });
+
+  parallelUploadToS3.on("httpUploadProgress", (progress) => {
+    if (progress.total) {
+      const percentage = ((progress.loaded / progress.total) * 100).toFixed(1);
+      console.log(`⏳ S3 Upload (${fileName}): ${percentage}%`);
+    }
+  });
+
+  const result = await parallelUploadToS3.done();
+  console.log(`✅ S3 UPLOAD SUCCESS: ${fileName}`);
+
+  return {
+    ...result,
+    Key: result.Key || key,
+    Location:
+      result.Location ||
+      `https://${bucket}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`,
+  };
+};
+
+
+const compressVideo = (
+  inputPath,
+  outputPath,
+  crf = 22,
+  codec = "libx265"
+) => {
+  return new Promise((resolve, reject) => {
+    const startTime = Date.now();
+    console.log(`🎬 COMPRESSION START | Codec: ${codec} | CRF: ${crf}`);
+
+    const presetOption = codec === "libsvtav1" ? "-preset 6" : "-preset fast";
+
+    ffmpeg(inputPath)
+      .videoCodec(codec)
+      .videoFilters("scale=-2:'min(1080,ih)'")   
+      .outputOptions([
+        `-crf ${crf}`,
+        presetOption,
+        "-threads 0",
+        "-pix_fmt yuv420p",
+        "-c:a aac",
+        "-b:a 96k",
+        "-movflags +faststart",
+        ...(codec === "libx265" ? ["-tag:v hvc1"] : []),
+        ...(codec === "libsvtav1" ? ["-svtav1-params tune=0"] : []),
+      ])
+      .on("progress", (p) => {
+        if (p.percent) console.log(`⏳ ${codec} CRF ${crf}: ${p.percent.toFixed(1)}%`);
+      })
+      .on("end", () => {
+        console.log(`✅ COMPRESSION DONE | ${((Date.now() - startTime) / 1000).toFixed(2)}s`);
+        resolve(outputPath);
+      })
+      .on("error", (err) => {
+        console.log(`❌ COMPRESSION FAILED:`, err.message);
+        reject(err);
+      })
+      .save(outputPath);
+  });
+};
 
 // =======================
 // Generate Thumbnail
@@ -299,6 +403,8 @@ module.exports = {
   generateThumbnail,
   resizeImage,
   generateVideoPreview,
+  compressVideo,
+  uploadVideoParts,
   upload,
   TEMP_DIR,
   deleteFileWithRetry,

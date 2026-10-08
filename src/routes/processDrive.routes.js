@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { handleDriveFolderUpload, uploadSingleImage } = require("../services/drive.service");
+const { handleDriveFolderUpload, uploadSingleImage, processSupplierS3Folder } = require("../services/drive.service");
 const Folder = require("../models/folder");
 const fs = require("fs");
 const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVideoDuration, resizeImage } = require("../utils/auth.util");
@@ -1275,5 +1275,117 @@ router.post("/resize-and-clean-original-images", async (req, res) => {
 router.post('/initiate', initiateMultipartUpload);
 router.post('/complete', completeMultipartUpload);
 
+
+router.post("/get-event-capsule-presigned-url", async (req, res) => {
+  try {
+    const { fileName, fileType, folderName } = req.body;
+
+    if (!fileName || !fileType || !folderName) {
+      return res.status(400).json({
+        success: false,
+        message: "fileName, fileType and folderName are required",
+      });
+    }
+
+    const key = `${folderName}/${fileName}`;
+
+    const uploadURL = await s3.getSignedUrlPromise("putObject", {
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: key,
+      ContentType: fileType,
+      Expires: 900, // 15 minutes
+    });
+
+    return res.status(200).json({
+      success: true,
+      uploadURL,
+      key,
+    });
+  } catch (error) {
+    console.error("Event Capsule presigned URL error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to generate presigned URL",
+      error: error.message,
+    });
+  }
+});
+
+const activeSupplierFolders = new Set();
+router.post("/supplier-upload-done", async (req, res) => {
+  try {
+    const { folderName, userId, subFolderId } = req.body;
+
+    if (!folderName || !userId) {
+      return res.status(422).json({
+        success: false,
+        message: "folderName and userId are required",
+      });
+    }
+
+    const cleanFolderName = String(folderName).replace(/\/+$/, "");
+    const supplierId = String(userId);
+
+    if (cleanFolderName !== `recentWork_${supplierId}`) {
+      return res.status(403).json({
+        success: false,
+        message: "Invalid folder for this supplier",
+      });
+    }
+
+    const folder = await Folder.findOne({
+      folderName: cleanFolderName,
+      customerId: supplierId,
+    })
+      .select("_id")
+      .lean();
+
+    if (!folder) {
+      return res.status(404).json({
+        success: false,
+        message: "Folder not found",
+      });
+    }
+
+    const folderId = String(folder._id);
+
+    if (activeSupplierFolders.has(folderId)) {
+      return res.status(202).json({
+        success: true,
+        alreadyRunning: true,
+        message: "Processing is already running for this folder",
+      });
+    }
+
+    if (subFolderId) {
+      await Folder.updateOne(
+        { _id: folderId, "subFolders._id": String(subFolderId) },
+        { $set: { "subFolders.$.isFromSupplierDone": true } }
+      );
+    }
+
+    processSupplierS3Folder({
+      folderId,
+      folderName: cleanFolderName,
+      userId: supplierId,
+      subFolderId: subFolderId ? String(subFolderId) : null,
+    }).catch((error) => {
+      console.error("❌ Supplier S3 background processing failed:", error);
+    });
+
+    return res.status(202).json({
+      success: true,
+      message: "Supplier upload marked as done and processing started",
+      data: { folderId },
+    });
+  } catch (error) {
+    console.error("❌ Supplier upload done error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong",
+    });
+  }
+});
 
 module.exports = router;
