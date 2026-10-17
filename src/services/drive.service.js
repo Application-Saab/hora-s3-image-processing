@@ -873,13 +873,9 @@ async function handleDriveFolderUpload(
 
   console.log(`Folder status set to "done" for mainFolderId: ${mainFolderId}`);
 
-  const folder = await FolderModel.findById(mainFolderId).lean();
-
   const updatedOrderId = updatedOrder?.order_id + 10800
 
-  const whatsappLink = folder?.shortCode
-    ? `https://horaservices.com/eventcapsule/share/${folder.shortCode}`
-    : updatedOrder.orderWebLink;
+  const whatsappLink = `https://horaservices.com`;
 
   if (updatedOrder?.phone_no) {
     await sendWhatsApp(updatedOrder.phone_no, updatedOrderId, whatsappLink);
