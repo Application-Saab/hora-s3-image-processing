@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { handleDriveFolderUpload, uploadSingleImage, processSupplierS3Folder } = require("../services/drive.service");
+const { handleDriveFolderUpload, uploadSingleImage, processSupplierS3Folder, processSupplierOrderS3Folder } = require("../services/drive.service");
 const Folder = require("../models/folder");
 const fs = require("fs");
 const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVideoDuration, resizeImage } = require("../utils/auth.util");
@@ -1384,6 +1384,77 @@ router.post("/supplier-upload-done", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Something went wrong",
+    });
+  }
+});
+
+
+router.post("/supplier-order-upload-done", async (req, res) => {
+  try {
+    const { folderName, userId } = req.body;
+
+    if (!folderName || !userId) {
+      return res.status(422).json({
+        success: false,
+        message: "folderName and userId are required",
+      });
+    }
+
+    const cleanFolderName = folderName;
+
+    const supplierId = String(userId);
+
+
+    const folder = await Folder.findOne({
+      folderName: cleanFolderName,
+      customerId: supplierId,
+    })
+      .select("_id")
+      .lean();
+
+    if (!folder) {
+      return res.status(404).json({
+        success: false,
+        message: "Folder not found",
+      });
+    }
+
+    const folderId = String(folder._id);
+
+    if (activeSupplierFolders.has(folderId)) {
+      return res.status(202).json({
+        success: true,
+        message: "Folder processing is already running",
+        data: { folderId },
+      });
+    }
+
+    processSupplierOrderS3Folder({
+      folderId,
+      folderName: cleanFolderName,
+      userId: supplierId,
+    }).catch((error) => {
+      console.error(
+        "Background supplier processing error:",
+        error
+      );
+    });
+
+    return res.status(202).json({
+      success: true,
+      message: "Supplier upload processing started",
+      data: { folderId },
+    });
+  } catch (error) {
+    console.error(
+      "supplier-upload-done error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong",
+      error: error.message,
     });
   }
 });
