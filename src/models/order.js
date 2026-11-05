@@ -46,6 +46,16 @@ const orderSchema = new mongoose.Schema({
     vendor_amount: { type: String, default: '' },
     order_taken_by: { type: String, default: '' },
     eventName: { type: String, default: '' },
+    imageUploadByApp: { type: Boolean, default: false },
+  albumImages: {
+    type: [String],
+    default: []
+  },
+
+  isAlbumVerified: {
+    type: Boolean,
+    default: false
+  },
     call_checklist: { type: Object, default: {} },
     call_checklist_exists: { type: Boolean, default: false },
 imageUploadCounts: {

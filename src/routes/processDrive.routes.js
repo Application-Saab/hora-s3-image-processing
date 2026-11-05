@@ -1,7 +1,8 @@
 const express = require("express");
 const router = express.Router();
-const { handleDriveFolderUpload, uploadSingleImage, processSupplierS3Folder } = require("../services/drive.service");
+const { handleDriveFolderUpload, uploadSingleImage, processSupplierS3Folder, processSupplierOrderS3Folder } = require("../services/drive.service");
 const Folder = require("../models/folder");
+const Order = require("../models/order");
 const fs = require("fs");
 const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVideoDuration, resizeImage } = require("../utils/auth.util");
 const { initiateMultipartUpload, completeMultipartUpload } = require('./videoUpload');
@@ -1387,5 +1388,170 @@ router.post("/supplier-upload-done", async (req, res) => {
     });
   }
 });
+
+
+router.post("/supplier-order-upload-done", async (req, res) => {
+  try {
+    const { folderName, userId, orderId } = req.body;
+
+    if (!folderName || !userId || !orderId) {
+      return res.status(422).json({
+        success: false,
+        message: "folderName, orderId and userId are required",
+      });
+    }
+
+    await Order.updateOne(
+      { order_id: orderId },
+      { $set: { imageUploadByApp: true } }
+    );
+
+    const cleanFolderName = folderName;
+
+    const supplierId = String(userId);
+
+
+    const folder = await Folder.findOne({
+      folderName: cleanFolderName,
+      customerId: supplierId,
+    })
+      .select("_id")
+      .lean();
+
+    if (!folder) {
+      return res.status(404).json({
+        success: false,
+        message: "Folder not found",
+      });
+    }
+
+    const folderId = String(folder._id);
+
+    if (activeSupplierFolders.has(folderId)) {
+      return res.status(202).json({
+        success: true,
+        message: "Folder processing is already running",
+        data: { folderId },
+      });
+    }
+
+    processSupplierOrderS3Folder({
+      folderId,
+      folderName: cleanFolderName,
+      userId: supplierId,
+    }).catch((error) => {
+      console.error(
+        "Background supplier processing error:",
+        error
+      );
+    });
+
+    return res.status(202).json({
+      success: true,
+      message: "Supplier upload processing started",
+      data: { folderId },
+    });
+  } catch (error) {
+    console.error(
+      "supplier-upload-done error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong",
+      error: error.message,
+    });
+  }
+});
+
+const uploadAlbumImage = async (req, res) => {
+  let outputPath;
+
+  try {
+    const { orderId, imageName, phoneNo } = req.body;
+
+    if (!req.file || !orderId || !imageName) {
+      return res.status(400).json({
+        success: false,
+        message: "Image, orderId and imageName are required"
+      });
+    }
+
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found"
+      });
+    }
+
+    // Generate thumbnail
+    const finalImageName = `${path.parse(imageName).name}.webp`;
+
+    outputPath = path.join(
+      path.dirname(req.file.path),
+      `processed_${Date.now()}.webp`
+    );
+
+    await generateThumbnail(
+      req.file.path,
+      outputPath
+    );
+
+    // Upload to S3
+    const result = await uploadFileToS3(
+      outputPath,
+      finalImageName,
+      `album_upload/${orderId}`,
+      phoneNo || "",
+      "image/webp"
+    );
+
+    // Save only image URL
+    await Order.findByIdAndUpdate(
+      orderId,
+      {
+        $push: {
+          albumImages: result.Location
+        },
+        $set: {
+          isAlbumVerified: false
+        }
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Album image uploaded successfully",
+      imageUrl: result.Location
+    });
+
+  } catch (error) {
+    console.error("Album upload error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to upload album image"
+    });
+
+  } finally {
+    // Delete temporary files
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+
+    if (outputPath && fs.existsSync(outputPath)) {
+      fs.unlinkSync(outputPath);
+    }
+  }
+};
+
+router.post(
+  "/upload-album-image",
+  upload.single("image"),
+  uploadAlbumImage
+);
 
 module.exports = router;
