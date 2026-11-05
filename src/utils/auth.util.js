@@ -213,6 +213,133 @@ const compressVideo = (
   });
 };
 
+
+const compressVideoInChunks = async (
+  inputPath,
+  outputPath,
+  crf = 22,
+  codec = "libx265",
+  chunkDuration = 300,
+  parallelCount = 2
+) => {
+  const tempDir = path.dirname(outputPath);
+  const chunkFiles = [];
+  const listFile = path.join(tempDir, `concat_${Date.now()}.txt`);
+
+  try {
+    const metadata = await new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(inputPath, (err, data) => {
+        if (err) return reject(err);
+        resolve(data);
+      });
+    });
+
+    const totalDuration = Number(metadata.format.duration);
+
+    if (!totalDuration || !Number.isFinite(totalDuration)) {
+      throw new Error("Unable to detect video duration");
+    }
+
+    const totalChunks = Math.ceil(totalDuration / chunkDuration);
+    const presetOption = codec === "libsvtav1" ? "6" : "fast";
+
+    console.log(`🎬 Total Duration: ${totalDuration}s`);
+    console.log(`📦 Total Chunks: ${totalChunks}`);
+    console.log(`⚙️ Parallel Processes: ${parallelCount}`);
+
+    for (let i = 0; i < totalChunks; i++) {
+      chunkFiles.push(
+        path.join(tempDir, `chunk_${Date.now()}_${i}.mp4`)
+      );
+    }
+
+    let nextChunk = 0;
+
+    const worker = async () => {
+      while (true) {
+        const index = nextChunk++;
+
+        if (index >= totalChunks) return;
+
+        const startTime = index * chunkDuration;
+        const duration = Math.min(
+          chunkDuration,
+          totalDuration - startTime
+        );
+
+        console.log(`🚀 Starting Chunk ${index + 1}/${totalChunks}`);
+
+        await new Promise((resolve, reject) => {
+          const command = ffmpeg(inputPath)
+            .setStartTime(startTime)
+            .setDuration(duration)
+            .videoCodec(codec)
+            .videoFilters("scale=-2:'min(1080,ih)'")
+            .outputOptions([
+              `-crf ${crf}`,
+              `-preset ${presetOption}`,
+              "-threads 0",
+              "-pix_fmt yuv420p",
+              "-c:a aac",
+              "-b:a 96k",
+              "-movflags +faststart",
+              ...(codec === "libx265" ? ["-tag:v hvc1"] : []),
+              ...(codec === "libsvtav1" ? ["-svtav1-params tune=0"] : [])
+            ])
+            .on("end", () => {
+              console.log(`✅ Chunk ${index + 1} completed`);
+              resolve();
+            })
+            .on("error", reject);
+
+          command.save(chunkFiles[index]);
+        });
+      }
+    };
+
+    await Promise.all(
+      Array.from(
+        { length: Math.min(parallelCount, totalChunks) },
+        () => worker()
+      )
+    );
+
+    const concatContent = chunkFiles
+      .map(file => `file '${file.replace(/'/g, "'\\''")}'`)
+      .join("\n");
+
+    await fsPromise.writeFile(listFile, concatContent);
+
+    console.log("🔗 Merging compressed chunks...");
+
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(listFile)
+        .inputOptions(["-f concat", "-safe 0"])
+        .outputOptions([
+          "-c copy",
+          "-movflags +faststart"
+        ])
+        .on("end", resolve)
+        .on("error", reject)
+        .save(outputPath);
+    });
+
+    console.log("✅ All chunks merged successfully");
+
+    return outputPath;
+
+  } finally {
+    await Promise.all([
+      ...chunkFiles.map(file =>
+        fsPromise.unlink(file).catch(() => { })
+      ),
+      fsPromise.unlink(listFile).catch(() => { })
+    ]);
+  }
+};
+
+
 // =======================
 // Generate Thumbnail
 // =======================
@@ -409,4 +536,5 @@ module.exports = {
   TEMP_DIR,
   deleteFileWithRetry,
   getVideoDuration,
+  compressVideoInChunks,
 };
