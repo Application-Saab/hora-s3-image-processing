@@ -8,13 +8,24 @@ const ffmpeg = require("fluent-ffmpeg");
 require("dotenv").config();
 const { Upload } = require("@aws-sdk/lib-storage");
 const { S3Client } = require("@aws-sdk/client-s3");
+const os = require("os");
+
+// const s3Client = new S3Client({
+//   region: process.env.AWS_REGION,
+//   credentials: {
+//     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+//     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+//   },
+// });
 
 const s3Client = new S3Client({
-  region: process.env.AWS_REGION,
+  region: process.env.AWS_REGION || "ap-south-1",
   credentials: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
+  requestChecksumCalculation: "WHEN_REQUIRED",
+  responseChecksumValidation: "WHEN_REQUIRED",
 });
 
 // AWS S3 config
@@ -213,20 +224,28 @@ const compressVideo = (
   });
 };
 
+const formatMs = (ms) => {
+  const totalSec = Math.floor(ms / 1000);
+  return `${Math.floor(totalSec / 60)}m ${totalSec % 60}s`;
+};
 
 const compressVideoInChunks = async (
   inputPath,
   outputPath,
-  crf = 22,
-  codec = "libx265",
+  crf = 23,
+  codec = "libx264",
   chunkDuration = 300,
-  parallelCount = 2
+  parallelCount = 2,
+  preset = "veryfast"
 ) => {
   const tempDir = path.dirname(outputPath);
+  const runId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const chunkFiles = [];
-  const listFile = path.join(tempDir, `concat_${Date.now()}.txt`);
+  const listFile = path.join(tempDir, `concat_${runId}.txt`);
+  const startedAt = Date.now();
 
   try {
+    // 1) Probe
     const metadata = await new Promise((resolve, reject) => {
       ffmpeg.ffprobe(inputPath, (err, data) => {
         if (err) return reject(err);
@@ -241,36 +260,39 @@ const compressVideoInChunks = async (
     }
 
     const totalChunks = Math.ceil(totalDuration / chunkDuration);
-    const presetOption = codec === "libsvtav1" ? "6" : "fast";
+    const presetOption = codec === "libsvtav1" ? "6" : preset;
+    const threadsPerProcess = Math.max(
+      1,
+      Math.floor(os.cpus().length / Math.min(parallelCount, totalChunks))
+    );
 
-    console.log(`🎬 Total Duration: ${totalDuration}s`);
+    console.log(`🎬 Total Duration: ${Math.round(totalDuration)}s`);
     console.log(`📦 Total Chunks: ${totalChunks}`);
-    console.log(`⚙️ Parallel Processes: ${parallelCount}`);
+    console.log(`⚙️ Parallel Processes: ${parallelCount} | Threads/process: ${threadsPerProcess}`);
+    console.log(`🎛️ Codec: ${codec} | Preset: ${presetOption} | CRF: ${crf}`);
 
     for (let i = 0; i < totalChunks; i++) {
-      chunkFiles.push(
-        path.join(tempDir, `chunk_${Date.now()}_${i}.mp4`)
-      );
+      chunkFiles.push(path.join(tempDir, `chunk_${runId}_${i}.mp4`));
     }
 
+    // 2) Parallel chunk encode
     let nextChunk = 0;
+    let completedChunks = 0;
+    const encodeStartedAt = Date.now();
 
     const worker = async () => {
       while (true) {
         const index = nextChunk++;
-
         if (index >= totalChunks) return;
 
         const startTime = index * chunkDuration;
-        const duration = Math.min(
-          chunkDuration,
-          totalDuration - startTime
-        );
+        const duration = Math.min(chunkDuration, totalDuration - startTime);
+        const chunkStartedAt = Date.now();
 
-        console.log(`🚀 Starting Chunk ${index + 1}/${totalChunks}`);
+        console.log(`🚀 Chunk ${index + 1}/${totalChunks} started`);
 
         await new Promise((resolve, reject) => {
-          const command = ffmpeg(inputPath)
+          ffmpeg(inputPath)
             .setStartTime(startTime)
             .setDuration(duration)
             .videoCodec(codec)
@@ -278,34 +300,39 @@ const compressVideoInChunks = async (
             .outputOptions([
               `-crf ${crf}`,
               `-preset ${presetOption}`,
-              "-threads 0",
+              `-threads ${threadsPerProcess}`,
               "-pix_fmt yuv420p",
               "-c:a aac",
               "-b:a 96k",
               "-movflags +faststart",
               ...(codec === "libx265" ? ["-tag:v hvc1"] : []),
-              ...(codec === "libsvtav1" ? ["-svtav1-params tune=0"] : [])
+              ...(codec === "libsvtav1" ? ["-svtav1-params tune=0"] : []),
             ])
             .on("end", () => {
-              console.log(`✅ Chunk ${index + 1} completed`);
+              completedChunks++;
+              console.log(
+                `✅ Chunk ${index + 1}/${totalChunks} done in ${formatMs(Date.now() - chunkStartedAt)} | ` +
+                `Progress: ${completedChunks}/${totalChunks} | Elapsed: ${formatMs(Date.now() - startedAt)}`
+              );
               resolve();
             })
-            .on("error", reject);
-
-          command.save(chunkFiles[index]);
+            .on("error", (err) => reject(new Error(`Chunk ${index + 1} failed: ${err.message}`)))
+            .save(chunkFiles[index]);
         });
       }
     };
 
     await Promise.all(
-      Array.from(
-        { length: Math.min(parallelCount, totalChunks) },
-        () => worker()
-      )
+      Array.from({ length: Math.min(parallelCount, totalChunks) }, () => worker())
     );
 
+    console.log(`📊 All chunks encoded in ${formatMs(Date.now() - encodeStartedAt)}`);
+
+    // 3) Merge
+    const mergeStartedAt = Date.now();
+
     const concatContent = chunkFiles
-      .map(file => `file '${file.replace(/'/g, "'\\''")}'`)
+      .map((file) => `file '${file.replace(/'/g, "'\\''")}'`)
       .join("\n");
 
     await fsPromise.writeFile(listFile, concatContent);
@@ -316,25 +343,20 @@ const compressVideoInChunks = async (
       ffmpeg()
         .input(listFile)
         .inputOptions(["-f concat", "-safe 0"])
-        .outputOptions([
-          "-c copy",
-          "-movflags +faststart"
-        ])
+        .outputOptions(["-c copy", "-movflags +faststart"])
         .on("end", resolve)
         .on("error", reject)
         .save(outputPath);
     });
 
-    console.log("✅ All chunks merged successfully");
+    console.log(`✅ Merge done in ${formatMs(Date.now() - mergeStartedAt)}`);
+    console.log(`🎉 Compression total time: ${formatMs(Date.now() - startedAt)}`);
 
     return outputPath;
-
   } finally {
     await Promise.all([
-      ...chunkFiles.map(file =>
-        fsPromise.unlink(file).catch(() => { })
-      ),
-      fsPromise.unlink(listFile).catch(() => { })
+      ...chunkFiles.map((file) => fsPromise.unlink(file).catch(() => { })),
+      fsPromise.unlink(listFile).catch(() => { }),
     ]);
   }
 };

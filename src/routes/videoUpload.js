@@ -4,14 +4,13 @@ const {
     UploadPartCommand,
     CompleteMultipartUploadCommand,
     GetObjectCommand,
-    PutObjectCommand,
 } = require("@aws-sdk/client-s3");
-const { compressVideo, compressVideoInChunks } = require("../utils/auth.util");
+const { Upload } = require("@aws-sdk/lib-storage");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const { compressVideoInChunks } = require("../utils/auth.util");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-
-const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const s3Client = new S3Client({
     region: process.env.AWS_REGION || "ap-south-1",
@@ -19,9 +18,38 @@ const s3Client = new S3Client({
         accessKeyId: process.env.AWS_ACCESS_KEY_ID,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
     },
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
 });
 
 const BUCKET_NAME = process.env.S3_BUCKET_NAME || "photography-hora";
+
+/* ---------------- Time log helpers ---------------- */
+
+const formatMs = (ms) => {
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}m ${s}s`;
+};
+
+const createTimer = (label) => {
+    const startedAt = Date.now();
+    let lastStep = startedAt;
+
+    return {
+        step: (message) => {
+            const now = Date.now();
+            console.log(
+                `⏱️ [${label}] ${message} | step: ${formatMs(now - lastStep)} | total: ${formatMs(now - startedAt)}`
+            );
+            lastStep = now;
+        },
+        total: () => Date.now() - startedAt,
+    };
+};
+
+/* ---------------- S3 download ---------------- */
 
 const downloadS3ObjectToFile = async (key, filePath) => {
     const command = new GetObjectCommand({
@@ -42,7 +70,10 @@ const downloadS3ObjectToFile = async (key, filePath) => {
     });
 };
 
+/* ---------------- Initiate multipart ---------------- */
+
 const initiateMultipartUpload = async (req, res) => {
+    console.log("start")
     try {
         const { fileName, fileType, totalChunks, folderName = "video_uploads" } = req.body;
 
@@ -82,83 +113,102 @@ const initiateMultipartUpload = async (req, res) => {
     }
 };
 
+/* ---------------- Complete multipart + compress ---------------- */
+
 const completeMultipartUpload = async (req, res) => {
+    // Compression lamba chalta hai, isliye request timeout band kar do
+    req.setTimeout(0);
+    res.setTimeout(0);
+
+    const { uploadId, key, parts, fromPanel } = req.body;
+    const isPanel = fromPanel === true || fromPanel === "true";
+
+    const timer = createTimer(key);
+    let localOriginal = null;
+    let localCompressed = null;
+
     try {
-        const { uploadId, key, parts, fromPanel } = req.body;
+        console.log(`🚀 [${key}] Complete request received | fromPanel: ${isPanel}`);
+
         const sortedParts = parts.sort((a, b) => a.PartNumber - b.PartNumber);
 
-        const completeCommand = new CompleteMultipartUploadCommand({
-            Bucket: BUCKET_NAME,
-            Key: key,
-            UploadId: uploadId,
-            MultipartUpload: { Parts: sortedParts },
-        });
+        const result = await s3Client.send(
+            new CompleteMultipartUploadCommand({
+                Bucket: BUCKET_NAME,
+                Key: key,
+                UploadId: uploadId,
+                MultipartUpload: { Parts: sortedParts },
+            })
+        );
+        timer.step("✅ S3 multipart merge complete (original video ready)");
 
-        const result = await s3Client.send(completeCommand);
+        const fileUrl =
+            result.Location || `https://${BUCKET_NAME}.s3.amazonaws.com/${key}`;
 
-        let compressedKey = null;
+        let compressedUrl = null;
 
-        let localOriginal = null;
-        let localCompressed = null;
-        if (fromPanel === true || fromPanel === "true") {
-
+        if (isPanel) {
             const tempDir = os.tmpdir();
+            const safeId = String(uploadId).replace(/[^a-zA-Z0-9]/g, "").slice(-24);
 
-            localOriginal = path.join(tempDir, `original_${uploadId}.mp4`);
-            localCompressed = path.join(tempDir, `compressed_${uploadId}.mp4`);
+            localOriginal = path.join(tempDir, `original_${safeId}.mp4`);
+            localCompressed = path.join(tempDir, `compressed_${safeId}.mp4`);
 
+            // 1) Download
             await downloadS3ObjectToFile(key, localOriginal);
+            const originalSizeMB = (fs.statSync(localOriginal).size / (1024 * 1024)).toFixed(1);
+            timer.step(`⬇️ Original downloaded from S3 (${originalSizeMB} MB)`);
 
-            console.log("Original video downloaded successfully");
-
+            // 2) Compress (chunks + merge ke andar ke logs utils me aayenge)
             await compressVideoInChunks(
                 localOriginal,
                 localCompressed,
-                22,
-                "libx265",
-                300, 
-                2    
+                23,          // crf
+                "libx264",   // codec
+                300,         // chunkDuration (seconds)
+                2            // parallelCount
             );
+            const compressedSizeMB = (fs.statSync(localCompressed).size / (1024 * 1024)).toFixed(1);
+            timer.step(`🎞️ Compression finished (${originalSizeMB} MB → ${compressedSizeMB} MB)`);
 
-            console.log("Video compression completed");
-            compressedKey = `${key.replace(/\.[^/.]+$/, "")}_compressed.mp4`;
+            // 3) Upload compressed to S3
+            const compressedKey = `${key.replace(/\.[^/.]+$/, "")}_compressed.mp4`;
 
-            await s3Client.send(new PutObjectCommand({
-                Bucket: BUCKET_NAME,
-                Key: compressedKey,
-                Body: fs.createReadStream(localCompressed),
-                ContentType: "video/mp4"
-            }));
+            await new Upload({
+                client: s3Client,
+                params: {
+                    Bucket: BUCKET_NAME,
+                    Key: compressedKey,
+                    Body: fs.createReadStream(localCompressed),
+                    ContentType: "video/mp4",
+                },
+                queueSize: 4,
+                partSize: 25 * 1024 * 1024,
+            }).done();
+            timer.step(`⬆️ Compressed video uploaded to S3: ${compressedKey}`);
 
-            console.log("Compressed video uploaded to S3:", compressedKey);
+            compressedUrl = `https://${BUCKET_NAME}.s3.amazonaws.com/${compressedKey}`;
         }
 
-        const fileUrl = result.Location || `https://${BUCKET_NAME}.s3.amazonaws.com/${key}`;
-
-        const compressedUrl = compressedKey
-            ? `https://${BUCKET_NAME}.s3.amazonaws.com/${compressedKey}`
-            : null;
-
-        if (fromPanel === true || fromPanel === "true") {
-            await fs.promises.unlink(localOriginal).catch(() => { });
-            await fs.promises.unlink(localCompressed).catch(() => { });
-
-            console.log("Temporary video files deleted");
-        }
+        console.log(`🏁 [${key}] ALL DONE | Total time: ${formatMs(timer.total())}`);
 
         return res.status(200).json({
             success: true,
-            message: 'Video uploaded successfully!',
+            message: "Video uploaded successfully!",
             originalVideoUrl: fileUrl,
             compressedVideoUrl: compressedUrl,
         });
     } catch (error) {
-        console.error('Error completing upload:', error);
+        console.error(`❌ [${key}] Error after ${formatMs(timer.total())}:`, error);
         return res.status(500).json({ success: false, message: error.message });
+    } finally {
+        if (localOriginal) await fs.promises.unlink(localOriginal).catch(() => { });
+        if (localCompressed) await fs.promises.unlink(localCompressed).catch(() => { });
+        if (isPanel) console.log(`🧹 [${key}] Temporary files deleted`);
     }
 };
 
 module.exports = {
     initiateMultipartUpload,
-    completeMultipartUpload
+    completeMultipartUpload,
 };
