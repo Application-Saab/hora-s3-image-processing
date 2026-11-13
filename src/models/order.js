@@ -47,6 +47,18 @@ const orderSchema = new mongoose.Schema({
     order_taken_by: { type: String, default: '' },
     eventName: { type: String, default: '' },
     imageUploadByApp: { type: Boolean, default: false },
+
+  imageUploadTracking: {
+    startedAt: {
+      type: Date,
+      default: null
+    },
+    updatedAt: {
+      type: Date,
+      default: null
+    }
+  },
+  
   albumImages: {
     type: [String],
     default: []

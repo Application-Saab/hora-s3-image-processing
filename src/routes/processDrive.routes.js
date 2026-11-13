@@ -1403,7 +1403,19 @@ router.post("/supplier-order-upload-done", async (req, res) => {
 
     await Order.updateOne(
       { order_id: orderId },
-      { $set: { imageUploadByApp: true } }
+      [
+        {
+          $set: {
+            imageUploadByApp: true,
+            imageUploadTracking: {
+              startedAt: {
+                $ifNull: ["$imageUploadTracking.startedAt", new Date()]
+              },
+              updatedAt: new Date()
+            }
+          }
+        }
+      ]
     );
 
     const cleanFolderName = folderName;

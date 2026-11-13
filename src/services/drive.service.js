@@ -1435,6 +1435,43 @@ async function processSupplierOrderS3Folder({
     return doc;
   }
 
+  async function callFaceCountApi(isLastBatch, batchNumber = null) {
+    try {
+      console.log(
+        `🤖 FACE API START | Batch: ${batchNumber || "FINAL"} | isLastBatch: ${isLastBatch}`
+      );
+
+      const formData = new FormData();
+
+      formData.append("folder_name", folderName);
+      formData.append("folderId", folderId);
+      formData.append("userId", userId);
+      formData.append("isLastBatch", String(isLastBatch));
+
+      const response = await axios.post(
+        "https://horaservices.com/face-api/count-unique-persons",
+        formData,
+        {
+          headers: formData.getHeaders(),
+          timeout: 120000,
+        }
+      );
+
+      console.log(
+        "🤖 FACE API RESPONSE:",
+        response.data
+      );
+
+      return response.data;
+
+    } catch (error) {
+      console.error(
+        "❌ FACE API ERROR:",
+        error?.response?.data || error.message
+      );
+    }
+  }
+
   try {
     console.log(
       `SUPPLIER PROCESSING START | folder: ${folderName}`
@@ -1763,6 +1800,13 @@ async function processSupplierOrderS3Folder({
 
     const failedFiles = [];
 
+
+    let uploadedImageCount = 0;
+    let faceApiBatchCount = 0;
+
+    // Face API calls ko sequence mein execute karne ke liye
+    let faceApiQueue = Promise.resolve();
+
     async function processWithRetry(file) {
       for (
         let attempt = 0;
@@ -1770,13 +1814,43 @@ async function processSupplierOrderS3Folder({
         attempt++
       ) {
         try {
-          const status =
-            file.type === "video"
-              ? await processVideo(file)
-              : await processImage(file);
+const status =
+  file.type === "video"
+    ? await processVideo(file)
+    : await processImage(file);
 
-          stats[status]++;
-          return;
+stats[status]++;
+
+// FACE API: Only successfully uploaded new images
+if (file.type === "image" && status === "done") {
+
+  uploadedImageCount++;
+
+  console.log(
+    `IMAGE UPLOADED COUNT: ${uploadedImageCount}`
+  );
+
+  // Every 20 successful images
+  if (uploadedImageCount % 20 === 0) {
+
+    faceApiBatchCount++;
+
+    const currentBatch = faceApiBatchCount;
+
+    console.log(
+      `🤖 Calling Face API for batch ${currentBatch}`
+    );
+
+    // Queue prevents overlapping Face API requests
+    faceApiQueue = faceApiQueue.then(() =>
+      callFaceCountApi(false, currentBatch)
+    );
+
+    await faceApiQueue;
+  }
+}
+
+return;
         } catch (err) {
           console.error(
             `${file.fileId} attempt ${attempt + 1} failed:`,
@@ -1825,6 +1899,29 @@ async function processSupplierOrderS3Folder({
         worker
       )
     );
+
+
+    // ---------------- FINAL FACE API CALL ----------------
+
+    const totalProcessedCount =
+      stats.done + stats.cleaned;
+
+    if (
+      mediaFiles.length > 0 &&
+      totalProcessedCount >= mediaFiles.length - 5
+    ) {
+
+      console.log(
+        "🤖 ALL FILES PROCESSING COMPLETED. STARTING FINAL FACE COUNT..."
+      );
+
+      // Wait for previous batch calls
+      await faceApiQueue;
+
+      // Final Face API call
+      await callFaceCountApi(true);
+
+    }
 
     await FolderModel.updateOne(
       { _id: folderId },
