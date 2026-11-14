@@ -38,7 +38,16 @@ const venueImagesSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
-
+    postSmallThumbUrl: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    postSmallThumbKey: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     folderIds: {
       type: [String],
       default: [],
@@ -46,6 +55,7 @@ const venueImagesSchema = new mongoose.Schema(
     },
   },
   {
+    strict : false,
     timestamps: true,
     versionKey: false,
   },
