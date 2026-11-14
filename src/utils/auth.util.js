@@ -264,6 +264,57 @@ const generateThumbnail = async (
   }
 };
 
+const generateThumbnailVenue = async (
+  inputPath,
+  outputPath,
+  rotation = 0,
+  options = {}
+) => {
+  const {
+    width = 1080,
+    height = null,
+    quality = 80,
+    fit = "inside",
+  } = options;
+
+  try {
+    let image = sharp(inputPath);
+
+    if ([90, 180, 270].includes(rotation)) {
+      image = image.rotate(rotation);
+    } else {
+      image = image.rotate();
+    }
+
+    const resizeOptions = {
+      width,
+      withoutEnlargement: true,
+      fit,
+    };
+
+    if (height) {
+      resizeOptions.height = height;
+    }
+
+    const outputBuffer = await image
+      .resize(resizeOptions)
+      .webp({ quality })
+      .withMetadata({ orientation: 1 })
+      .toBuffer();
+
+    await fsPromise.writeFile(outputPath, outputBuffer);
+
+    console.log(
+      `Thumbnail (${width}x${height || "auto"}) saved: ${outputPath} (${(
+        outputBuffer.length / 1024
+      ).toFixed(2)} KB)`
+    );
+  } catch (error) {
+    console.error("Error generating thumbnail:", error);
+    throw error;
+  }
+};
+
 
 
 async function resizeImage(
@@ -401,6 +452,7 @@ module.exports = {
   uploadFileToS3,
   uploadFileToS3Wonderland,
   generateThumbnail,
+  generateThumbnailVenue,
   resizeImage,
   generateVideoPreview,
   compressVideo,
