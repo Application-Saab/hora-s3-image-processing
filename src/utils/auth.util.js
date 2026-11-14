@@ -232,9 +232,9 @@ const formatMs = (ms) => {
 const compressVideoInChunks = async (
   inputPath,
   outputPath,
-  crf = 23,
+  crf = 26,              // डिफ़ॉल्ट 26 रखा है ताकि साइज 80% तक कम हो
   codec = "libx264",
-  chunkDuration = 300,
+  chunkDuration = 300,   // 60 की जगह 300 (5 मिनट) रखें ताकि प्रोसेस ओवरहेड कम हो
   parallelCount = 2,
   preset = "veryfast"
 ) => {
@@ -245,7 +245,7 @@ const compressVideoInChunks = async (
   const startedAt = Date.now();
 
   try {
-    // 1) Probe
+    // 1) Probe metadata
     const metadata = await new Promise((resolve, reject) => {
       ffmpeg.ffprobe(inputPath, (err, data) => {
         if (err) return reject(err);
@@ -254,22 +254,29 @@ const compressVideoInChunks = async (
     });
 
     const totalDuration = Number(metadata.format.duration);
-
     if (!totalDuration || !Number.isFinite(totalDuration)) {
       throw new Error("Unable to detect video duration");
     }
 
-    const totalChunks = Math.ceil(totalDuration / chunkDuration);
-    const presetOption = codec === "libsvtav1" ? "6" : preset;
-    const threadsPerProcess = Math.max(
-      1,
-      Math.floor(os.cpus().length / Math.min(parallelCount, totalChunks))
-    );
+    const vStream = metadata.streams.find((s) => s.codec_type === "video");
+    const rate =
+      vStream && vStream.avg_frame_rate && vStream.avg_frame_rate !== "0/0"
+        ? vStream.avg_frame_rate
+        : vStream?.r_frame_rate || "30/1";
+    const [n, d] = rate.split("/").map(Number);
+    const fps = d ? n / d : n;
 
-    console.log(`🎬 Total Duration: ${Math.round(totalDuration)}s`);
-    console.log(`📦 Total Chunks: ${totalChunks}`);
-    console.log(`⚙️ Parallel Processes: ${parallelCount} | Threads/process: ${threadsPerProcess}`);
-    console.log(`🎛️ Codec: ${codec} | Preset: ${presetOption} | CRF: ${crf}`);
+    // स्मार्ट फ़िल्टर: अगर FPS 30 से ज्यादा है तभी 30 करें, वरना ओरिजिनल रहने दें
+    const videoFilters = [];
+    if (fps > 31) videoFilters.push("fps=30");
+    videoFilters.push("scale=-2:'min(1080,ih)'");
+
+    const cpuCount = os.cpus().length;
+    const effectiveParallel = cpuCount <= 2 ? 1 : Math.min(parallelCount, Math.ceil(totalDuration / chunkDuration));
+    const threadsPerProcess = Math.max(1, Math.floor(cpuCount / effectiveParallel));
+    const totalChunks = Math.ceil(totalDuration / chunkDuration);
+
+    console.log(`🎬 Duration: ${Math.round(totalDuration)}s | Chunks: ${totalChunks} | Parallel: ${effectiveParallel} | Threads/proc: ${threadsPerProcess}`);
 
     for (let i = 0; i < totalChunks; i++) {
       chunkFiles.push(path.join(tempDir, `chunk_${runId}_${i}.mp4`));
@@ -293,27 +300,26 @@ const compressVideoInChunks = async (
 
         await new Promise((resolve, reject) => {
           ffmpeg(inputPath)
-            .setStartTime(startTime)
-            .setDuration(duration)
-            .videoCodec(codec)
-            .videoFilters("scale=-2:'min(1080,ih)'")
+            .inputOptions([`-ss ${startTime}`]) // Fast Keyframe Seek
             .outputOptions([
+              `-t ${duration}`,
+              `-c:v ${codec}`,
+              `-vf ${videoFilters.join(",")}`, // ऊपर बने डायनामिक फ़िल्टर का इस्तेमाल
+              `-preset ${preset}`,
               `-crf ${crf}`,
-              `-preset ${presetOption}`,
+              "-maxrate 2500k",                // 1080p लैपटॉप स्क्रीन के लिए क्रिस्प बिटरेट
+              "-bufsize 5000k",
               `-threads ${threadsPerProcess}`,
               "-pix_fmt yuv420p",
+              "-profile:v high",
+              "-level 4.1",
               "-c:a aac",
               "-b:a 96k",
-              "-movflags +faststart",
-              ...(codec === "libx265" ? ["-tag:v hvc1"] : []),
-              ...(codec === "libsvtav1" ? ["-svtav1-params tune=0"] : []),
+              "-avoid_negative_ts make_zero",
             ])
             .on("end", () => {
               completedChunks++;
-              console.log(
-                `✅ Chunk ${index + 1}/${totalChunks} done in ${formatMs(Date.now() - chunkStartedAt)} | ` +
-                `Progress: ${completedChunks}/${totalChunks} | Elapsed: ${formatMs(Date.now() - startedAt)}`
-              );
+              console.log(`✅ Chunk ${index + 1}/${totalChunks} done in ${formatMs(Date.now() - chunkStartedAt)}`);
               resolve();
             })
             .on("error", (err) => reject(new Error(`Chunk ${index + 1} failed: ${err.message}`)))
@@ -322,22 +328,16 @@ const compressVideoInChunks = async (
       }
     };
 
-    await Promise.all(
-      Array.from({ length: Math.min(parallelCount, totalChunks) }, () => worker())
-    );
-
+    await Promise.all(Array.from({ length: effectiveParallel }, () => worker()));
     console.log(`📊 All chunks encoded in ${formatMs(Date.now() - encodeStartedAt)}`);
 
     // 3) Merge
     const mergeStartedAt = Date.now();
-
     const concatContent = chunkFiles
       .map((file) => `file '${file.replace(/'/g, "'\\''")}'`)
       .join("\n");
 
     await fsPromise.writeFile(listFile, concatContent);
-
-    console.log("🔗 Merging compressed chunks...");
 
     await new Promise((resolve, reject) => {
       ffmpeg()
@@ -349,9 +349,7 @@ const compressVideoInChunks = async (
         .save(outputPath);
     });
 
-    console.log(`✅ Merge done in ${formatMs(Date.now() - mergeStartedAt)}`);
-    console.log(`🎉 Compression total time: ${formatMs(Date.now() - startedAt)}`);
-
+    console.log(`✅ Merge done in ${formatMs(Date.now() - mergeStartedAt)} | Total: ${formatMs(Date.now() - startedAt)}`);
     return outputPath;
   } finally {
     await Promise.all([
@@ -360,6 +358,7 @@ const compressVideoInChunks = async (
     ]);
   }
 };
+
 
 
 // =======================

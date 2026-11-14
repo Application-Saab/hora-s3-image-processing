@@ -163,11 +163,13 @@ const completeMultipartUpload = async (req, res) => {
             await compressVideoInChunks(
                 localOriginal,
                 localCompressed,
-                23,          // crf
-                "libx264",   // codec
-                300,         // chunkDuration (seconds)
-                2            // parallelCount
+                26,          
+                "libx264",   
+                300,         
+                2,           
+                "veryfast"   
             );
+
             const compressedSizeMB = (fs.statSync(localCompressed).size / (1024 * 1024)).toFixed(1);
             timer.step(`🎞️ Compression finished (${originalSizeMB} MB → ${compressedSizeMB} MB)`);
 
