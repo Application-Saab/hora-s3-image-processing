@@ -8,16 +8,27 @@ const ffmpeg = require("fluent-ffmpeg");
 require("dotenv").config();
 const { Upload } = require("@aws-sdk/lib-storage");
 const { S3Client } = require("@aws-sdk/client-s3");
+const os = require("os");
+
+// const s3Client = new S3Client({
+//   region: process.env.AWS_REGION,
+//   credentials: {
+//     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+//     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+//   },
+// });
 
 sharp.concurrency(1);
 sharp.cache(false);
 
 const s3Client = new S3Client({
-  region: process.env.AWS_REGION,
+  region: process.env.AWS_REGION || "ap-south-1",
   credentials: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
+  requestChecksumCalculation: "WHEN_REQUIRED",
+  responseChecksumValidation: "WHEN_REQUIRED",
 });
 
 // AWS S3 config
@@ -150,9 +161,9 @@ const uploadVideoParts = async (
       Body: fileStream,
       ContentType: contentType,
     },
-    partSize,                    
-    queueSize,                   
-    leavePartsOnError: false,   
+    partSize,
+    queueSize,
+    leavePartsOnError: false,
   });
 
   parallelUploadToS3.on("httpUploadProgress", (progress) => {
@@ -217,6 +228,141 @@ const compressVideo = (
   });
 };
 
+const formatMs = (ms) => {
+  const totalSec = Math.floor(ms / 1000);
+  return `${Math.floor(totalSec / 60)}m ${totalSec % 60}s`;
+};
+
+const compressVideoInChunks = async (
+  inputPath,
+  outputPath,
+  crf = 26,              
+  codec = "libx264",
+  chunkDuration = 300,   
+  parallelCount = 1,
+  preset = "veryfast"
+) => {
+  const tempDir = path.dirname(outputPath);
+  const runId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const chunkFiles = [];
+  const listFile = path.join(tempDir, `concat_${runId}.txt`);
+  const startedAt = Date.now();
+
+  try {
+    // 1) Probe metadata
+    const metadata = await new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(inputPath, (err, data) => {
+        if (err) return reject(err);
+        resolve(data);
+      });
+    });
+
+    const totalDuration = Number(metadata.format.duration);
+    if (!totalDuration || !Number.isFinite(totalDuration)) {
+      throw new Error("Unable to detect video duration");
+    }
+
+    const vStream = metadata.streams.find((s) => s.codec_type === "video");
+    const rate =
+      vStream && vStream.avg_frame_rate && vStream.avg_frame_rate !== "0/0"
+        ? vStream.avg_frame_rate
+        : vStream?.r_frame_rate || "30/1";
+    const [n, d] = rate.split("/").map(Number);
+    const fps = d ? n / d : n;
+
+    const videoFilters = [];
+    if (fps > 31) videoFilters.push("fps=30");
+    videoFilters.push("scale=-2:'min(1080,ih)'");
+
+    const cpuCount = os.cpus().length;
+    const effectiveParallel = cpuCount <= 2 ? 1 : Math.min(parallelCount, Math.ceil(totalDuration / chunkDuration));
+    const threadsPerProcess = Math.max(1, Math.floor(cpuCount / effectiveParallel));
+    const totalChunks = Math.ceil(totalDuration / chunkDuration);
+
+    console.log(`🎬 Duration: ${Math.round(totalDuration)}s | Chunks: ${totalChunks} | Parallel: ${effectiveParallel} | Threads/proc: ${threadsPerProcess}`);
+
+    for (let i = 0; i < totalChunks; i++) {
+      chunkFiles.push(path.join(tempDir, `chunk_${runId}_${i}.mp4`));
+    }
+
+    let nextChunk = 0;
+    let completedChunks = 0;
+    const encodeStartedAt = Date.now();
+
+    const worker = async () => {
+      while (true) {
+        const index = nextChunk++;
+        if (index >= totalChunks) return;
+
+        const startTime = index * chunkDuration;
+        const duration = Math.min(chunkDuration, totalDuration - startTime);
+        const chunkStartedAt = Date.now();
+
+        console.log(`🚀 Chunk ${index + 1}/${totalChunks} started`);
+
+        await new Promise((resolve, reject) => {
+          ffmpeg(inputPath)
+            .inputOptions([`-ss ${startTime}`]) 
+            .outputOptions([
+              `-t ${duration}`,
+              `-c:v ${codec}`,
+              `-vf ${videoFilters.join(",")}`, 
+              `-preset ${preset}`,
+              `-crf ${crf}`,
+              "-maxrate 2500k",                
+              "-bufsize 5000k",
+              `-threads 1`,
+              "-pix_fmt yuv420p",
+              "-profile:v high",
+              "-level 4.1",
+              "-c:a aac",
+              "-b:a 96k",
+              "-avoid_negative_ts make_zero",
+            ])
+            .on("end", () => {
+              completedChunks++;
+              console.log(`✅ Chunk ${index + 1}/${totalChunks} done in ${formatMs(Date.now() - chunkStartedAt)}`);
+              resolve();
+            })
+            .on("error", (err) => reject(new Error(`Chunk ${index + 1} failed: ${err.message}`)))
+            .save(chunkFiles[index]);
+        });
+      }
+    };
+
+    await Promise.all(Array.from({ length: effectiveParallel }, () => worker()));
+    console.log(`📊 All chunks encoded in ${formatMs(Date.now() - encodeStartedAt)}`);
+
+    // 3) Merge
+    const mergeStartedAt = Date.now();
+    const concatContent = chunkFiles
+      .map((file) => `file '${file.replace(/'/g, "'\\''")}'`)
+      .join("\n");
+
+    await fsPromise.writeFile(listFile, concatContent);
+
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(listFile)
+        .inputOptions(["-f concat", "-safe 0"])
+        .outputOptions(["-c copy", "-movflags +faststart"])
+        .on("end", resolve)
+        .on("error", reject)
+        .save(outputPath);
+    });
+
+    console.log(`✅ Merge done in ${formatMs(Date.now() - mergeStartedAt)} | Total: ${formatMs(Date.now() - startedAt)}`);
+    return outputPath;
+  } finally {
+    await Promise.all([
+      ...chunkFiles.map((file) => fsPromise.unlink(file).catch(() => { })),
+      fsPromise.unlink(listFile).catch(() => { }),
+    ]);
+  }
+};
+
+
+
 // =======================
 // Generate Thumbnail
 // =======================
@@ -226,7 +372,7 @@ const generateThumbnail = async (
   rotation = 0
 ) => {
   if (inputPath && fs.existsSync(inputPath)) {
-    console.log("inputPath =====",inputPath,"EXISTS OR NOT ",fs.existsSync(inputPath));
+    console.log("inputPath =====", inputPath, "EXISTS OR NOT ", fs.existsSync(inputPath));
   }
 
   try {
@@ -464,4 +610,5 @@ module.exports = {
   TEMP_DIR,
   deleteFileWithRetry,
   getVideoDuration,
+  compressVideoInChunks,
 };

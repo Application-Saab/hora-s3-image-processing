@@ -14,13 +14,13 @@ const sendWhatsApp = async (mobile, orderId, link) => {
                 from: "+917338584828",
                 to: formatted,
                 content: {
-                    templateName: "weblink",
+                    templateName: "weblink_v5",
                     language: "en",
                     templateData: {
                         body: {
                             placeholders: [
+                                String(link),     // Source
                                 String(orderId), // Order status
-                                String(link)     // Source
                             ]
                         }
                     }

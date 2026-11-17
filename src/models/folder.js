@@ -116,6 +116,29 @@ const FolderSchema = new mongoose.Schema(
     },
       },
     ],
+
+
+
+    rawVideoClips: [
+      {
+        fileUrl: {
+          type: String,
+          required: true,
+        },
+        s3Key: {
+          type: String,
+          required: true,
+        },
+        fileName: String,
+        fileType: String,
+        submittedAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
+
+
   },
   { timestamps: true }
 );

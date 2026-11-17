@@ -1287,9 +1287,9 @@ router.post('/complete', completeMultipartUpload);
 
 router.post("/get-event-capsule-presigned-url", async (req, res) => {
   try {
-    const { fileName, fileType, folderName } = req.body;
+    const { fileName, fileType, folderName, inclusionType } = req.body;
 
-    if (!fileName || !fileType || !folderName) {
+    if (!fileName || !fileType || !folderName || !inclusionType) {
       return res.status(400).json({
         success: false,
         message: "fileName, fileType and folderName are required",
@@ -1302,6 +1302,9 @@ router.post("/get-event-capsule-presigned-url", async (req, res) => {
       Bucket: process.env.S3_BUCKET_NAME,
       Key: key,
       ContentType: fileType,
+      Metadata: {
+        inclusiontype: inclusionType,
+      },
       Expires: 900, // 15 minutes
     });
 
@@ -1400,19 +1403,14 @@ router.post("/supplier-upload-done", async (req, res) => {
 
 router.post("/supplier-order-upload-done", async (req, res) => {
   try {
-    const { folderName, userId, orderId } = req.body;
+    const { folderName, userId, orderId, inclusionType  } = req.body;
 
-    if (!folderName || !userId || !orderId) {
+    if (!folderName || !userId || !orderId || !inclusionType) {
       return res.status(422).json({
         success: false,
         message: "folderName, orderId and userId are required",
       });
     }
-
-    await Order.updateOne(
-      { order_id: orderId },
-      { $set: { imageUploadByApp: true } }
-    );
 
     const cleanFolderName = folderName;
 
@@ -1421,7 +1419,6 @@ router.post("/supplier-order-upload-done", async (req, res) => {
 
     const folder = await Folder.findOne({
       folderName: cleanFolderName,
-      customerId: supplierId,
     })
       .select("_id")
       .lean();
@@ -1435,18 +1432,20 @@ router.post("/supplier-order-upload-done", async (req, res) => {
 
     const folderId = String(folder._id);
 
-    if (activeSupplierFolders.has(folderId)) {
-      return res.status(202).json({
-        success: true,
-        message: "Folder processing is already running",
-        data: { folderId },
-      });
-    }
+    // if (activeSupplierFolders.has(folderId)) {
+    //   return res.status(202).json({
+    //     success: true,
+    //     message: "Folder processing is already running",
+    //     data: { folderId },
+    //   });
+    // }
 
     processSupplierOrderS3Folder({
       folderId,
       folderName: cleanFolderName,
       userId: supplierId,
+      inclusionType,
+      orderId,
     }).catch((error) => {
       console.error(
         "Background supplier processing error:",
@@ -1561,5 +1560,136 @@ router.post(
   upload.single("image"),
   uploadAlbumImage
 );
+
+
+
+router.post("/save-raw-video-clips", async (req, res) => {
+  try {
+    const { folderId, files } = req.body;
+
+    if (!folderId || !Array.isArray(files) || !files.length) {
+      return res.status(400).json({
+        success: false,
+        message: "folderId and files are required",
+      });
+    }
+
+    const folder = await Folder.findById(folderId);
+
+    if (!folder) {
+      return res.status(404).json({
+        success: false,
+        message: "Folder not found",
+      });
+    }
+
+    const bucket = process.env.S3_BUCKET_NAME;
+    const prefix = "rawVideoClips/";
+
+    const newFiles = [];
+
+    for (const file of files) {
+      const { key, fileName, fileType } = file;
+
+      if (
+        !key ||
+        !key.startsWith(prefix) ||
+        !fileName ||
+        !fileType
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid file details",
+        });
+      }
+
+      // Verify file actually exists in S3
+      await s3.headObject({
+        Bucket: bucket,
+        Key: key,
+      }).promise();
+
+      // Prevent duplicate entries
+      const alreadyExists = (folder.rawVideoClips || []).some(
+        (item) => item.s3Key === key
+      );
+
+      if (alreadyExists) continue;
+
+      // Generate signed URL (maximum 7 days)
+      const fileUrl = s3.getSignedUrl("getObject", {
+        Bucket: bucket,
+        Key: key,
+        Expires: 7 * 24 * 60 * 60,
+      });
+
+      newFiles.push({
+        fileUrl,
+        s3Key: key,
+        fileName,
+        fileType,
+        submittedAt: new Date(),
+      });
+    }
+
+    if (newFiles.length) {
+      folder.rawVideoClips.push(...newFiles);
+      await folder.save();
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Raw Video Clips saved successfully",
+      data: folder.rawVideoClips,
+    });
+
+  } catch (error) {
+    console.error("Save Raw Video Clips error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to save Raw Video Clips",
+      error: error.message,
+    });
+  }
+});
+
+router.get("/download-raw-video-clip", async (req, res) => {
+  try {
+    const { key } = req.query;
+
+    if (!key || !key.startsWith("rawVideoClips/")) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid file key",
+      });
+    }
+
+    const params = {
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: key,
+      Expires: 300,
+      ResponseContentDisposition: "attachment",
+    };
+
+    const downloadUrl = await s3.getSignedUrlPromise(
+      "getObject",
+      params
+    );
+
+    return res.json({
+      success: true,
+      downloadUrl,
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      success: false,
+      message: "Download URL generation failed",
+    });
+  }
+});
+
 
 module.exports = router;
