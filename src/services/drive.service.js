@@ -17,9 +17,10 @@ const {
   uploadVideoParts,
   deleteFileWithRetry,
   getVideoDuration,
+  compressVideoInChunks,
 } = require("../utils/auth.util.js");
 const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
-
+const sheetApikey = process.env.GOOGLE_SCRIPT_DEPLOYMENT_ID;
 
 const s3 = new AWS.S3({
   accessKeyId: process.env.AWS_ACCESS_KEY_ID,
@@ -1384,61 +1385,234 @@ async function getOrderS3FolderFiles(folderPrefix) {
   return allFiles;
 }
 
+const FACE_BATCH_SIZE = 20;
+const HEAD_OBJECT_CONCURRENCY = 10;
+
+function formatPhoneForSheet(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
+  return `+${digits}`;
+}
+
+function formatDateForSheet(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return String(value);
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `${dd}/${mm}/${d.getUTCFullYear()}`;
+}
+
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let idx = 0;
+
+  const runners = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (idx < items.length) {
+        const i = idx++;
+        results[i] = await fn(items[i], i);
+      }
+    }
+  );
+
+  await Promise.all(runners);
+  return results;
+}
+
 async function processSupplierOrderS3Folder({
   folderId,
   folderName,
   userId,
+  inclusionType,
+  orderId,
 }) {
-  const lockKey = String(folderId);
+  const lockKey = `${folderId}_${inclusionType}`;
 
   if (activeSupplierFolders.has(lockKey)) {
     return {
-      success: false,
-      alreadyRunning: true,
+      success: true,
+      message: "This inclusion is already processing",
+      data: { folderId },
     };
   }
 
   activeSupplierFolders.add(lockKey);
 
   const tempDir = path.join(__dirname, "tempUploads");
+  const ctx = { userId, folderId };
 
-  async function saveAndEmit(fileId, setFields) {
+
+
+  async function saveAndEmit(fileId, fileInclusionType, setFields) {
+    const order = await OrderModel.findOne({ order_id: orderId })
+      .select("_id fromId phone_no")
+      .lean();
+
+    if (!order) {
+      throw new Error(`Order not found: ${orderId}`);
+    }
+
     const doc = await WebLink.findOneAndUpdate(
-      {
-        fileId,
-        mainFolderId: folderId,
-      },
+      { fileId, mainFolderId: folderId },
       {
         $set: {
           fileId,
           mainFolderId: folderId,
-          orderById: userId,
+          orderId: String(order._id),
+          orderById: String(order.fromId),
+          orderByName: order.phone_no || "",
           status: "done",
+          inclusionType: fileInclusionType,
           ...setFields,
         },
       },
-      {
-        upsert: true,
-        new: true,
-      }
+      { upsert: true, new: true }
     ).lean();
 
-    emitToSupplier(
-      { userId, folderId },
-      "media:done",
-      {
-        folderId: String(folderId),
-        file: doc,
-      }
-    );
+    emitToSupplier(ctx, "media:done", {
+      folderId: String(folderId),
+      file: doc,
+    });
 
     return doc;
   }
 
+
+  async function callFaceCountApi(isLastBatch, batchNumber = null) {
+    try {
+      console.log(
+        `🤖 FACE API START | Batch: ${batchNumber || "FINAL"} | isLastBatch: ${isLastBatch}`
+      );
+
+      const formData = new FormData();
+      formData.append("folder_name", folderName);
+      formData.append("folderId", String(folderId));
+      formData.append("userId", String(userId));
+      formData.append("isLastBatch", String(isLastBatch));
+
+      const response = await axios.post(
+        "https://horaservices.com/face-api/count-unique-persons",
+        formData,
+        { headers: formData.getHeaders(), timeout: 120000 }
+      );
+
+      console.log("🤖 FACE API RESPONSE:", response.data);
+      return response.data;
+    } catch (error) {
+      console.error(
+        "❌ FACE API ERROR:",
+        error?.response?.data || error.message
+      );
+      return null; // kabhi throw nahi karega, upload flow nahi rukega
+    }
+  }
+
+  async function safeDeleteS3(key) {
+    try {
+      await deleteS3Object(key);
+    } catch (e) {
+      console.error("S3 delete failed:", key, e.message);
+    }
+  }
+  async function notifyOrderComplete() {
+    let order = null;
+
+    try {
+      order = await OrderModel.findOne({ order_id: orderId }).lean();
+
+      if (!order) {
+        console.log(
+          `Notify skipped: ORDER NOT FOUND | order_id: ${orderId} (type: ${typeof orderId})`
+        );
+        return;
+      }
+
+      const orderFolder = await FolderModel.findOne({ orderId })
+        .select("shortCode")
+        .lean();
+
+      const webLink = orderFolder?.shortCode
+        ? `https://horaservices.com/eventcapsule/share/${orderFolder.shortCode}`
+        : order.orderWebLink;
+
+      const displayOrderId = Number(order.order_id) + 10800;
+
+      const sheetPayload = {
+        targetSheet: "photography_drivelink",
+        rawOrderId: String(order.order_id),
+        orderId: String(displayOrderId),
+        customerNumber: `'${formatPhoneForSheet(order.phone_no)}`,
+        orderFulfilmentDate: formatDateForSheet(order.order_date),
+        service: "Photography",
+        driveLink: "N/A",
+        webLink,
+        contentTypes: [],
+      };
+
+      console.log("📊 SHEET PAYLOAD:", sheetPayload);
+
+      const sheetUrl = `https://script.google.com/macros/s/${sheetApikey}/exec`;
+
+      const response = await axios.post(sheetUrl, sheetPayload, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 30000,
+      });
+
+      console.log("📊 SHEET RESPONSE:", response.data);
+
+      if (response.data?.status !== "success") {
+        throw new Error(
+          "Google Sheet API failed: " + JSON.stringify(response.data)
+        );
+      }
+
+      // Sheet success ke baad flag + startedAt/updatedAt set karo
+      const now = new Date();
+
+      await OrderModel.updateOne(
+        { order_id: orderId },
+        {
+          $set: {
+            imageUploadByApp: true,
+            "imageUploadTracking.updatedAt": now,
+          },
+        }
+      );
+
+      // startedAt sirf tab set ho jab pehle se na ho (null ya missing)
+      await OrderModel.updateOne(
+        { order_id: orderId, "imageUploadTracking.startedAt": null },
+        { $set: { "imageUploadTracking.startedAt": now } }
+      );
+    } catch (sheetError) {
+      console.error("❌ Sheet step failed:", sheetError.message);
+      return; // sheet nahi gayi to WhatsApp bhi nahi bhejna
+    }
+
+    // WhatsApp alag try me
+    try {
+      if (order.phone_no) {
+        const displayOrderId = Number(order.order_id) + 10800;
+        await sendWhatsApp(
+          order.phone_no,
+          displayOrderId,
+          "https://horaservices.com"
+        );
+        console.log("✅ WhatsApp sent:", displayOrderId);
+      }
+    } catch (waError) {
+      console.error("❌ WhatsApp failed:", waError.message);
+    }
+  }
+
+  // ---------------- MAIN ----------------
+
   try {
-    console.log(
-      `SUPPLIER PROCESSING START | folder: ${folderName}`
-    );
+    console.log(`SUPPLIER PROCESSING START | folder: ${folderName}`);
 
     await FolderModel.updateOne(
       { _id: folderId },
@@ -1449,11 +1623,12 @@ async function processSupplierOrderS3Folder({
       fs.mkdirSync(tempDir, { recursive: true });
     }
 
-    // Get only main folder files
+    // ---------- Collect pending files ----------
+
     const s3Objects = await getOrderS3FolderFiles(folderName);
 
-    const mediaFiles = [];
     let skippedCount = 0;
+    const candidates = [];
 
     for (const obj of s3Objects) {
       const type = getMediaTypeFromKey(obj.Key);
@@ -1465,188 +1640,120 @@ async function processSupplierOrderS3Folder({
 
       const fileId = path.basename(obj.Key);
 
-      if (
-        PROCESSED_PREFIXES.some((prefix) =>
-          fileId.startsWith(prefix)
-        )
-      ) {
-        continue;
-      }
+      if (PROCESSED_PREFIXES.some((p) => fileId.startsWith(p))) continue;
 
-      mediaFiles.push({
-        key: obj.Key,
-        fileId,
-        baseId: path.parse(fileId).name,
-        type,
-      });
+      candidates.push({ key: obj.Key, fileId, type });
     }
+
+    // headObject ab parallel (pehle ek-ek karke sequential tha)
+    const heads = await mapLimit(
+      candidates,
+      HEAD_OBJECT_CONCURRENCY,
+      async (c) => {
+        const head = await s3
+          .headObject({ Bucket: BUCKET_NAME, Key: c.key })
+          .promise();
+        // Old files without metadata -> Color Corrected Photos
+        return head.Metadata?.inclusiontype || "ColorCorrectedPhotos";
+      }
+    );
+
+    const mediaFiles = [];
+    candidates.forEach((c, i) => {
+      if (heads[i] !== inclusionType) return; // sirf requested tab ki files
+      mediaFiles.push({
+        key: c.key,
+        fileId: c.fileId,
+        baseId: path.parse(c.fileId).name,
+        type: c.type,
+        inclusionType: heads[i],
+      });
+    });
 
     const doneDocs = await WebLink.find({
       mainFolderId: folderId,
       status: "done",
+      inclusionType,
     })
       .select("fileId type thumbnailKey")
       .lean();
 
-    const doneMap = new Map(
-      doneDocs.map((doc) => [doc.fileId, doc])
-    );
+    const doneMap = new Map(doneDocs.map((d) => [d.fileId, d]));
 
-    console.log(
-      `Pending: ${mediaFiles.length} | Skipped: ${skippedCount}`
-    );
+    console.log(`Pending: ${mediaFiles.length} | Skipped: ${skippedCount}`);
 
-    emitToSupplier(
-      { userId, folderId },
-      "media:processing:start",
-      {
-        folderId: String(folderId),
-        total: mediaFiles.length,
-      }
-    );
+    emitToSupplier(ctx, "media:processing:start", {
+      folderId: String(folderId),
+      total: mediaFiles.length,
+    });
 
-    // ---------------- IMAGE PROCESSING ----------------
+    // ---------- IMAGE ----------
 
-    async function processImage({
-      key: originalS3Key,
-      fileId,
-      baseId,
-    }) {
+    async function processImage({ key: originalS3Key, fileId, baseId, inclusionType }) {
       const existingDoc = doneMap.get(fileId);
 
-      // Already processed only when thumbnail also exists
-      if (
-        existingDoc?.type === "image" &&
-        existingDoc?.thumbnailKey
-      ) {
+      if (existingDoc?.type === "image" && existingDoc?.thumbnailKey) {
         await deleteS3Object(originalS3Key);
         return "cleaned";
       }
 
       const localOriginal = path.join(tempDir, fileId);
-
-      const local2880 = path.join(
-        tempDir,
-        `2880_${baseId}.jpg`
-      );
-
-      const localThumbnail = path.join(
-        tempDir,
-        `thumb_${baseId}.webp`
-      );
+      const local2880 = path.join(tempDir, `2880_${baseId}.jpg`);
+      const localThumbnail = path.join(tempDir, `thumb_${baseId}.webp`);
 
       const resizedFileName = `2880_${baseId}.jpeg`;
       const thumbnailFileName = `thumb_${baseId}.webp`;
 
       try {
-        // Download original
-        await downloadS3ObjectToFile(
-          originalS3Key,
-          localOriginal
-        );
+        await downloadS3ObjectToFile(originalS3Key, localOriginal);
 
-        // Detect orientation
-        const orientation = await detectImageOrientation(
-          localOriginal
-        );
+        const orientation = await detectImageOrientation(localOriginal);
+        const rotation = Number(orientation?.rotation || 0);
 
-        const rotation = Number(
-          orientation?.rotation || 0
-        );
+        // Resize + thumbnail parallel (dono independent hain)
+        await Promise.all([
+          resizeImage(localOriginal, local2880, 2880, rotation),
+          generateThumbnail(localOriginal, localThumbnail, rotation),
+        ]);
 
-        // Generate resized 2880 image
-        await resizeImage(
-          localOriginal,
-          local2880,
-          2880,
-          rotation
-        );
+        // Dono uploads parallel
+        const [resizedResponse, thumbnailResponse] = await Promise.all([
+          uploadFileToS3(local2880, resizedFileName, folderName, userId, "image/jpeg"),
+          uploadFileToS3(localThumbnail, thumbnailFileName, folderName, userId, "image/webp"),
+        ]);
 
-        // Generate thumbnail
-        await generateThumbnail(
-          localOriginal,
-          localThumbnail,
-          rotation
-        );
+        if (!resizedResponse?.Key) throw new Error("S3 upload failed for resized image");
+        if (!thumbnailResponse?.Key) throw new Error("S3 upload failed for thumbnail");
 
-        // Upload resized image
-        const resizedResponse = await uploadFileToS3(
-          local2880,
-          resizedFileName,
-          folderName,
-          userId,
-          "image/jpeg"
-        );
-
-        if (!resizedResponse?.Key) {
-          throw new Error(
-            "S3 upload failed for resized image"
-          );
-        }
-
-        // Upload thumbnail
-        const thumbnailResponse = await uploadFileToS3(
-          localThumbnail,
-          thumbnailFileName,
-          folderName,
-          userId,
-          "image/webp"
-        );
-
-        if (!thumbnailResponse?.Key) {
-          throw new Error(
-            "S3 upload failed for thumbnail"
-          );
-        }
-
-        // Save both URLs and keys
-        await saveAndEmit(fileId, {
+        await saveAndEmit(fileId, inclusionType, {
           type: "image",
-
-          originalUrl:
-            resizedResponse.Location ||
-            buildS3Url(resizedResponse.Key),
-
+          originalUrl: resizedResponse.Location || buildS3Url(resizedResponse.Key),
           originalKey: resizedResponse.Key,
-
           thumbnailImageUrl:
-            thumbnailResponse.Location ||
-            buildS3Url(thumbnailResponse.Key),
-
+            thumbnailResponse.Location || buildS3Url(thumbnailResponse.Key),
           thumbnailKey: thumbnailResponse.Key,
         });
 
-        // Delete original S3 file
         if (
           originalS3Key !== resizedResponse.Key &&
           originalS3Key !== thumbnailResponse.Key
         ) {
-          try {
-            await deleteS3Object(originalS3Key);
-          } catch (delErr) {
-            console.error(
-              "Original delete failed:",
-              originalS3Key,
-              delErr.message
-            );
-          }
+          await safeDeleteS3(originalS3Key);
         }
 
         return "done";
       } finally {
-        await safeDeleteLocalFile(localOriginal);
-        await safeDeleteLocalFile(local2880);
-        await safeDeleteLocalFile(localThumbnail);
+        await Promise.all([
+          safeDeleteLocalFile(localOriginal),
+          safeDeleteLocalFile(local2880),
+          safeDeleteLocalFile(localThumbnail),
+        ]);
       }
     }
 
-    // ---------------- VIDEO PROCESSING ----------------
+    // ---------- VIDEO ----------
 
-    async function processVideo({
-      key: originalS3Key,
-      fileId,
-      baseId,
-    }) {
+    async function processVideo({ key: originalS3Key, fileId, baseId, inclusionType }) {
       const existingDoc = doneMap.get(fileId);
 
       if (existingDoc?.type === "video") {
@@ -1659,33 +1766,22 @@ async function processSupplierOrderS3Folder({
 
       const localOriginal = path.join(tempDir, fileId);
       const localClip = path.join(tempDir, clipFileName);
-      const localCompressed = path.join(
-        tempDir,
-        compressedFileName
-      );
+      const localCompressed = path.join(tempDir, compressedFileName);
 
       try {
-        await downloadS3ObjectToFile(
-          originalS3Key,
-          localOriginal
-        );
+        await downloadS3ObjectToFile(originalS3Key, localOriginal);
 
-        const duration = await getVideoDuration(
-          localOriginal
-        );
+        const duration = await getVideoDuration(localOriginal);
 
-        await generateVideoPreview(
-          localOriginal,
-          localClip,
-          3,
-          0
-        );
-
-        await compressVideo(
+        await generateVideoPreview(localOriginal, localClip, 3, 0);
+        await compressVideoInChunks(
           localOriginal,
           localCompressed,
-          SUPPLIER_VIDEO_CRF,
-          "libx265"
+          26,
+          "libx264",
+          300,
+          1,
+          "veryfast"
         );
 
         const uploadOpts = {
@@ -1693,90 +1789,68 @@ async function processSupplierOrderS3Folder({
           queueSize: VIDEO_QUEUE_SIZE,
         };
 
-        const resClip = await uploadVideoParts(
-          localClip,
-          clipFileName,
-          folderName,
-          "video/mp4",
-          uploadOpts
-        );
-
-        const resVideo = await uploadVideoParts(
-          localCompressed,
-          compressedFileName,
-          folderName,
-          "video/mp4",
-          uploadOpts
-        );
+        const [resClip, resVideo] = await Promise.all([
+          uploadVideoParts(localClip, clipFileName, folderName, "video/mp4", uploadOpts),
+          uploadVideoParts(localCompressed, compressedFileName, folderName, "video/mp4", uploadOpts),
+        ]);
 
         if (!resClip?.Key || !resVideo?.Key) {
-          throw new Error(
-            "S3 upload failed for video/clip"
-          );
+          throw new Error("S3 upload failed for video/clip");
         }
 
-        await saveAndEmit(fileId, {
+        await saveAndEmit(fileId, inclusionType, {
           type: "video",
-
-          originalUrl:
-            resVideo.Location ||
-            buildS3Url(resVideo.Key),
-
+          originalUrl: resVideo.Location || buildS3Url(resVideo.Key),
           originalKey: resVideo.Key,
-
-          videoClipUrl:
-            resClip.Location ||
-            buildS3Url(resClip.Key),
-
+          videoClipUrl: resClip.Location || buildS3Url(resClip.Key),
           videoClipKey: resClip.Key,
-
           duration: duration || "",
         });
 
         if (originalS3Key !== resVideo.Key) {
-          try {
-            await deleteS3Object(originalS3Key);
-          } catch (delErr) {
-            console.error(
-              "Original video delete failed:",
-              originalS3Key,
-              delErr.message
-            );
-          }
+          await safeDeleteS3(originalS3Key);
         }
 
         return "done";
       } finally {
-        await safeDeleteLocalFile(localOriginal);
-        await safeDeleteLocalFile(localClip);
-        await safeDeleteLocalFile(localCompressed);
+        await Promise.all([
+          safeDeleteLocalFile(localOriginal),
+          safeDeleteLocalFile(localClip),
+          safeDeleteLocalFile(localCompressed),
+        ]);
       }
     }
 
-    // ---------------- RETRY + WORKER ----------------
+    // ---------- RETRY + WORKERS ----------
 
-    const stats = {
-      done: 0,
-      cleaned: 0,
-      failed: 0,
-    };
-
+    const stats = { done: 0, cleaned: 0, failed: 0 };
     const failedFiles = [];
 
+    let uploadedImageCount = 0;
+    let faceApiBatchCount = 0;
+    let faceApiQueue = Promise.resolve(); 
+
+    function onImageUploaded() {
+      uploadedImageCount++;
+
+      if (uploadedImageCount % FACE_BATCH_SIZE === 0) {
+        const currentBatch = ++faceApiBatchCount;
+        console.log(`🤖 Queueing Face API batch ${currentBatch}`);
+        faceApiQueue = faceApiQueue.then(() =>
+          callFaceCountApi(false, currentBatch)
+        );
+      }
+    }
+
     async function processWithRetry(file) {
-      for (
-        let attempt = 0;
-        attempt <= SUPPLIER_MAX_RETRIES;
-        attempt++
-      ) {
+      for (let attempt = 0; attempt <= SUPPLIER_MAX_RETRIES; attempt++) {
+        let status;
+
         try {
-          const status =
+          status =
             file.type === "video"
               ? await processVideo(file)
               : await processImage(file);
-
-          stats[status]++;
-          return;
         } catch (err) {
           console.error(
             `${file.fileId} attempt ${attempt + 1} failed:`,
@@ -1785,28 +1859,27 @@ async function processSupplierOrderS3Folder({
 
           if (attempt === SUPPLIER_MAX_RETRIES) {
             stats.failed++;
+            failedFiles.push({ fileName: file.fileId, error: err.message });
 
-            failedFiles.push({
-              fileName: file.fileId,
+            emitToSupplier(ctx, "media:failed", {
+              folderId: String(folderId),
+              fileId: file.fileId,
               error: err.message,
             });
-
-            emitToSupplier(
-              { userId, folderId },
-              "media:failed",
-              {
-                folderId: String(folderId),
-                fileId: file.fileId,
-                error: err.message,
-              }
-            );
           }
+          continue; // retry
         }
+
+        stats[status]++;
+
+        if (file.type === "image" && status === "done") {
+          onImageUploaded();
+        }
+        return;
       }
     }
 
     let cursor = 0;
-
     const worker = async () => {
       while (cursor < mediaFiles.length) {
         const file = mediaFiles[cursor++];
@@ -1816,52 +1889,56 @@ async function processSupplierOrderS3Folder({
 
     await Promise.all(
       Array.from(
-        {
-          length: Math.min(
-            SUPPLIER_CONCURRENCY,
-            mediaFiles.length
-          ),
-        },
+        { length: Math.min(SUPPLIER_CONCURRENCY, mediaFiles.length) },
         worker
       )
     );
 
+
+    const imageFiles = mediaFiles.filter((f) => f.type === "image");
+    const imageIds = new Set(imageFiles.map((f) => f.fileId));
+    const failedImageCount = failedFiles.filter((f) =>
+      imageIds.has(f.fileName)
+    ).length;
+
+    const allImagesOk = imageFiles.length > 0 && failedImageCount === 0;
+
+    await faceApiQueue; 
+
+    if (allImagesOk) {
+      console.log("🤖 ALL IMAGES DONE. FINAL FACE COUNT (isLastBatch=true)");
+      await callFaceCountApi(true);
+    } else {
+      console.log(
+        `Final face call skipped | images: ${imageFiles.length} | failed: ${failedImageCount}`
+      );
+    }
+
     await FolderModel.updateOne(
       { _id: folderId },
-      {
-        $set: {
-          status:
-            stats.failed === 0 ? "done" : "failed",
-        },
-      }
+      { $set: { status: stats.failed === 0 ? "done" : "failed" } }
     );
 
-    emitToSupplier(
-      { userId, folderId },
-      "media:folder:done",
-      {
-        folderId: String(folderId),
-        ...stats,
-        failedFiles,
-      }
-    );
-
-    console.log(
-      "===== SUPPLIER FINAL REPORT =====",
-      stats,
-      failedFiles
-    );
-
-    return {
-      success: true,
+    emitToSupplier(ctx, "media:folder:done", {
+      folderId: String(folderId),
       ...stats,
       failedFiles,
-    };
-  } catch (error) {
-    console.error(
-      "Error in processSupplierS3Folder:",
-      error
+    });
+
+
+    console.log(
+      `NOTIFY CHECK | allImagesOk: ${allImagesOk} | images: ${imageFiles.length} | failedImages: ${failedImageCount}`
     );
+
+    if (allImagesOk) {
+      await notifyOrderComplete();
+    }
+
+    console.log("===== SUPPLIER FINAL REPORT =====", stats, failedFiles);
+
+    return { success: true, ...stats, failedFiles };
+  } catch (error) {
+    console.error("Error in processSupplierS3Folder:", error);
 
     try {
       await FolderModel.updateOne(
@@ -1869,11 +1946,17 @@ async function processSupplierOrderS3Folder({
         { $set: { status: "failed" } }
       );
     } catch (e) {
-      console.error(
-        "Could not mark folder as failed:",
-        e.message
-      );
+      console.error("Could not mark folder as failed:", e.message);
     }
+
+    emitToSupplier(ctx, "media:folder:done", {
+      folderId: String(folderId),
+      done: 0,
+      cleaned: 0,
+      failed: 0,
+      failedFiles: [],
+      error: error.message,
+    });
 
     throw error;
   } finally {
