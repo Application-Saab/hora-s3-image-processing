@@ -232,10 +232,10 @@ const formatMs = (ms) => {
 const compressVideoInChunks = async (
   inputPath,
   outputPath,
-  crf = 26,              // डिफ़ॉल्ट 26 रखा है ताकि साइज 80% तक कम हो
+  crf = 26,              
   codec = "libx264",
-  chunkDuration = 300,   // 60 की जगह 300 (5 मिनट) रखें ताकि प्रोसेस ओवरहेड कम हो
-  parallelCount = 2,
+  chunkDuration = 300,   
+  parallelCount = 1,
   preset = "veryfast"
 ) => {
   const tempDir = path.dirname(outputPath);
@@ -266,7 +266,6 @@ const compressVideoInChunks = async (
     const [n, d] = rate.split("/").map(Number);
     const fps = d ? n / d : n;
 
-    // स्मार्ट फ़िल्टर: अगर FPS 30 से ज्यादा है तभी 30 करें, वरना ओरिजिनल रहने दें
     const videoFilters = [];
     if (fps > 31) videoFilters.push("fps=30");
     videoFilters.push("scale=-2:'min(1080,ih)'");
@@ -282,7 +281,6 @@ const compressVideoInChunks = async (
       chunkFiles.push(path.join(tempDir, `chunk_${runId}_${i}.mp4`));
     }
 
-    // 2) Parallel chunk encode
     let nextChunk = 0;
     let completedChunks = 0;
     const encodeStartedAt = Date.now();
@@ -300,16 +298,16 @@ const compressVideoInChunks = async (
 
         await new Promise((resolve, reject) => {
           ffmpeg(inputPath)
-            .inputOptions([`-ss ${startTime}`]) // Fast Keyframe Seek
+            .inputOptions([`-ss ${startTime}`]) 
             .outputOptions([
               `-t ${duration}`,
               `-c:v ${codec}`,
-              `-vf ${videoFilters.join(",")}`, // ऊपर बने डायनामिक फ़िल्टर का इस्तेमाल
+              `-vf ${videoFilters.join(",")}`, 
               `-preset ${preset}`,
               `-crf ${crf}`,
-              "-maxrate 2500k",                // 1080p लैपटॉप स्क्रीन के लिए क्रिस्प बिटरेट
+              "-maxrate 2500k",                
               "-bufsize 5000k",
-              `-threads ${threadsPerProcess}`,
+              `-threads 1`,
               "-pix_fmt yuv420p",
               "-profile:v high",
               "-level 4.1",

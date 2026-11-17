@@ -1780,7 +1780,7 @@ async function processSupplierOrderS3Folder({
           26,
           "libx264",
           300,
-          2,
+          1,
           "veryfast"
         );
 

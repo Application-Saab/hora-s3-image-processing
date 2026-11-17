@@ -176,7 +176,7 @@ const completeMultipartUpload = async (req, res) => {
                 26,
                 "libx264",
                 300,
-                2,
+                1,
                 "veryfast"
             );
 
