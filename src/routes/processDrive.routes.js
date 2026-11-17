@@ -13,6 +13,7 @@ const Weblink = require("../models/weblink-images")
 const fsPromises = require("fs").promises;
 const AWS = require("aws-sdk");
 const os = require("os");
+const pLimit = require("p-limit");
 const {
   S3Client,
   GetObjectCommand,
@@ -83,19 +84,26 @@ router.post("/process-drive", async (req, res) => {
   if (!folderUrl || !order_id) {
     return res.status(400).json({ message: "folderUrl & order_id required" });
   }
-  // frontend ko turant response
-  res.json({ message: "Processing started" });
 
-  setImmediate(async () => {
+  // Frontend ko turant response + queue position bata dein
+  res.json({
+    message: "Processing queued",
+    positionInQueue: driveQueue.pendingCount + 1
+  });
+
+  // Queue ke andar daalein taaki ek waqt par sirf 1 folder process ho
+  driveQueue(async () => {
     try {
-      const vendorId = order_id + 10800;
+      const vendorId = Number(order_id) + 10800;
+      console.log(`🚀 Starting Drive job for vendorId: ${vendorId} | Remaining in queue: ${driveQueue.pendingCount}`);
       await handleDriveFolderUpload(folderUrl, vendorId, phoneNo, customerId, order_id, mainFolderId);
-      console.log("Drive processing completed:", vendorId);
+      console.log("✅ Drive processing completed:", vendorId);
     } catch (err) {
-      console.error("Drive processing failed:", err.message);
+      console.error("❌ Drive processing failed:", err.message);
     }
   });
 });
+
 
 router.post("/create-subfolder", uploadSingel.single("file"), async (req, res) => {
   try {

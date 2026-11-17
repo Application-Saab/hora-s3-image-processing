@@ -9,6 +9,9 @@ require("dotenv").config();
 const { Upload } = require("@aws-sdk/lib-storage");
 const { S3Client } = require("@aws-sdk/client-s3");
 
+sharp.concurrency(1);
+sharp.cache(false);
+
 const s3Client = new S3Client({
   region: process.env.AWS_REGION,
   credentials: {
@@ -172,31 +175,32 @@ const uploadVideoParts = async (
 };
 
 
+
 const compressVideo = (
   inputPath,
   outputPath,
-  crf = 22,
-  codec = "libx265"
+  crf = 26,             // 22 ki jagah 26-28 fast aur chhoti file banata hai
+  codec = "libx264"     // libx265 ki jagah libx264 (5x kam CPU use karta hai)
 ) => {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
     console.log(`🎬 COMPRESSION START | Codec: ${codec} | CRF: ${crf}`);
 
-    const presetOption = codec === "libsvtav1" ? "-preset 6" : "-preset fast";
+    const presetOption = codec === "libsvtav1" ? "-preset 8" : "-preset veryfast";
 
     ffmpeg(inputPath)
       .videoCodec(codec)
-      .videoFilters("scale=-2:'min(1080,ih)'")   
+      .videoFilters("scale=-2:'min(1080,ih)'")
       .outputOptions([
         `-crf ${crf}`,
         presetOption,
-        "-threads 0",
+        "-threads 1",            // 0 hata kar 1 kiya (Sirf 1 CPU core use karega)
         "-pix_fmt yuv420p",
         "-c:a aac",
         "-b:a 96k",
         "-movflags +faststart",
         ...(codec === "libx265" ? ["-tag:v hvc1"] : []),
-        ...(codec === "libsvtav1" ? ["-svtav1-params tune=0"] : []),
+        ...(codec === "libsvtav1" ? ["-svtav1-params tune=0:lp=1"] : []),
       ])
       .on("progress", (p) => {
         if (p.percent) console.log(`⏳ ${codec} CRF ${crf}: ${p.percent.toFixed(1)}%`);
@@ -382,6 +386,7 @@ try {
   // ffmpeg-static not installed — fluent-ffmpeg will try system ffmpeg (/usr/bin/ffmpeg)
 }
 
+
 const generateVideoPreview = (
   inputPath,
   outputPath,
@@ -389,7 +394,6 @@ const generateVideoPreview = (
   start = 0,
 ) => {
   return new Promise((resolve, reject) => {
-    // ensure output dir exists
     const startTime = Date.now();
     console.log("🎬 Video preview generation started...");
 
@@ -397,35 +401,34 @@ const generateVideoPreview = (
     if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
     ffmpeg(inputPath)
-      .setStartTime(start) // start from beginning or a small offset
-      .setDuration(duration) // seconds
-      .videoCodec("libx264") // re-encode for compatibility & size
+      .setStartTime(start)
+      .setDuration(duration)
+      .videoCodec("libx264")
       .outputOptions([
-        "-crf 28", // quality (higher -> smaller)
-        "-preset veryfast", // speed
-        "-movflags +faststart", // streaming friendly
-        "-pix_fmt yuv420p", // compatibility
-        "-an", // remove audio to reduce size (optional)
+        "-threads 1",            // Single CPU core limit add kiya
+        "-crf 28",
+        "-preset veryfast",
+        "-movflags +faststart",
+        "-pix_fmt yuv420p",
+        "-an",
       ])
-      .size("640x?") // scale width to 640, keep aspect
+      .size("640x?")
       .on("end", () => {
         const endTime = Date.now();
         const timeTaken = ((endTime - startTime) / 1000).toFixed(2);
-
         console.log(`✅ Video preview generated in ${timeTaken} seconds`);
         resolve(outputPath);
       })
       .on("error", (err) => {
         const endTime = Date.now();
         const timeTaken = ((endTime - startTime) / 1000).toFixed(2);
-
         console.log(`❌ Failed after ${timeTaken} seconds Error : ${err}`);
-        reject(err);
-        throw err;
+        reject(err);             // 'throw err' hata diya taaki server crash na ho
       })
       .save(outputPath);
   });
 };
+
 
 
 const formatDuration = (seconds) => {
