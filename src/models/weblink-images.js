@@ -85,6 +85,11 @@ const weblinkSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+
+    inclusionType:{
+      type:String,
+      default: "",
+    },
     duration: {
       type: String,
       default: "",
