@@ -59,6 +59,28 @@ const FolderSchema = new mongoose.Schema(
         },
       },
     ],
+
+    appUploadInclusions: [
+      {
+        inclusionType: {
+          type: String,
+          required: true,
+        },
+        value: {
+          type: Boolean,
+          default: false,
+        },
+        startedAt: {
+          type: Date,
+          default: Date.now,
+        },
+        updatedAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
+    
     status: {
       type: String,
       enum: ["processing", "done", "failed"],

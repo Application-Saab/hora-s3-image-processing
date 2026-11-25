@@ -1423,6 +1423,16 @@ async function mapLimit(items, limit, fn) {
   return results;
 }
 
+const toInclusionKey = (name) => {
+  const value = String(name || "").trim();
+
+  if (value === "EditedVideo") {
+    return "editedVideos";
+  }
+
+  return value.charAt(0).toLowerCase() + value.slice(1);
+};
+
 async function processSupplierOrderS3Folder({
   folderId,
   folderName,
@@ -1521,6 +1531,39 @@ async function processSupplierOrderS3Folder({
   async function notifyOrderComplete() {
     let order = null;
 
+
+    const folderInclusion = await FolderModel.findById(folderId)
+      .select("appUploadInclusions")
+      .lean();
+
+    console.log(
+      "📦 FOLDER INCLUSIONS:",
+      JSON.stringify(folderInclusion?.appUploadInclusions, null, 2)
+    );
+
+    const contentTypesPayload = (
+      folderInclusion?.appUploadInclusions || []
+    )
+      .filter((item) => item.value === true)
+      .map((item) => ({
+        linkType: item.inclusionType,
+        link: "N/A",
+        submittedAt: item.startedAt
+          ? new Date(item.startedAt).toLocaleString("en-GB", {
+            timeZone: "Asia/Kolkata",
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: true,
+          })
+          : "N/A",
+      }));
+
+    console.log("📊 FINAL CONTENT TYPES:", contentTypesPayload);
+    
+
     try {
       order = await OrderModel.findOne({ order_id: orderId }).lean();
 
@@ -1543,14 +1586,16 @@ async function processSupplierOrderS3Folder({
 
       const sheetPayload = {
         targetSheet: "photography_drivelink",
-        rawOrderId: String(order.order_id),
-        orderId: String(displayOrderId),
-        customerNumber: `'${formatPhoneForSheet(order.phone_no)}`,
-        orderFulfilmentDate: formatDateForSheet(order.order_date),
+        rawOrderId: String(Number(order.order_id)),
+        orderId: String(Number(order.order_id) + 10800),
+        orderFulfilmentDate: order?.order_date
+          ? new Date(order.order_date).toLocaleDateString("en-GB")
+          : "N/A",
+        customerNumber: `="${formatPhoneForSheet(order.phone_no)}"`,
         service: "Photography",
         driveLink: "N/A",
         webLink,
-        contentTypes: [],
+        contentTypes: contentTypesPayload,
       };
 
       console.log("📊 SHEET PAYLOAD:", sheetPayload);
@@ -1654,7 +1699,9 @@ async function processSupplierOrderS3Folder({
           .headObject({ Bucket: BUCKET_NAME, Key: c.key })
           .promise();
         // Old files without metadata -> Color Corrected Photos
-        return head.Metadata?.inclusiontype || "ColorCorrectedPhotos";
+        return toInclusionKey(
+          head.Metadata?.inclusiontype || "ColorCorrectedPhotos"
+        );
       }
     );
 
