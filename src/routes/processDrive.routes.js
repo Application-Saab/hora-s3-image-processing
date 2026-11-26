@@ -1402,9 +1402,21 @@ router.post("/supplier-upload-done", async (req, res) => {
 });
 
 
+const toInclusionKey = (name) => {
+  const value = String(name || "").trim();
+
+  if (value === "EditedVideo") {
+    return "editedVideos";
+  }
+
+  return value.charAt(0).toLowerCase() + value.slice(1);
+};
+
 router.post("/supplier-order-upload-done", async (req, res) => {
   try {
     const { folderName, userId, orderId, inclusionType  } = req.body;
+
+    const cleanInclusionType = toInclusionKey(inclusionType);
 
     if (!folderName || !userId || !orderId || !inclusionType) {
       return res.status(422).json({
@@ -1433,6 +1445,43 @@ router.post("/supplier-order-upload-done", async (req, res) => {
 
     const folderId = String(folder._id);
 
+
+    const now = new Date();
+
+    const existingInclusion = await Folder.findOne({
+      _id: folderId,
+      "appUploadInclusions.inclusionType": cleanInclusionType,
+    }).select("_id");
+
+    if (existingInclusion) {
+      await Folder.updateOne(
+        {
+          _id: folderId,
+          "appUploadInclusions.inclusionType": cleanInclusionType,
+        },
+        {
+          $set: {
+            "appUploadInclusions.$.value": true,
+            "appUploadInclusions.$.updatedAt": now,
+          },
+        }
+      );
+    } else {
+      await Folder.updateOne(
+        { _id: folderId },
+        {
+          $push: {
+            appUploadInclusions: {
+              inclusionType: cleanInclusionType, 
+              value: true,
+              startedAt: now,
+              updatedAt: now,
+            },
+          },
+        }
+      );
+    }
+
     // if (activeSupplierFolders.has(folderId)) {
     //   return res.status(202).json({
     //     success: true,
@@ -1445,7 +1494,7 @@ router.post("/supplier-order-upload-done", async (req, res) => {
       folderId,
       folderName: cleanFolderName,
       userId: supplierId,
-      inclusionType,
+      inclusionType: cleanInclusionType,
       orderId,
     }).catch((error) => {
       console.error(
