@@ -18,6 +18,8 @@ const {
   deleteFileWithRetry,
   getVideoDuration,
   compressVideoInChunks,
+  create2880Image,
+  rotateImageInPlace,
 } = require("../utils/auth.util.js");
 const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
 const sheetApikey = process.env.GOOGLE_SCRIPT_DEPLOYMENT_ID;
@@ -347,59 +349,30 @@ async function handleDriveFolderUpload(
           const fileName2880 = `2880_${driveFileId}.jpeg`;
           const thumbFileName = `thumb_${driveFileId}.webp`;
 
-          console.log(
-            "STEP 3 IMAGE ORIENTATION DETECTION START:",
-            file.name
-          );
+          // STEP 3: Create 2880 image once
+          await create2880Image(filePath, path2880);
 
+          // STEP 4: Orientation API on same 2880 image
           const orientationResult =
-            await detectImageOrientation(filePath);
+            await detectImageOrientation(path2880);
 
           const rotation =
             Number(orientationResult?.rotation || 0);
 
-          console.log("==============================================");
-          console.log("IMAGE:", file.name);
-          console.log(
-            "PYTHON ROTATION:",
-            rotation
-          );
-          console.log(
-            "PYTHON CONFIDENCE:",
-            orientationResult?.confidence
-          );
-          console.log(
-            "PYTHON FACES:",
-            orientationResult?.faces
-          );
-          console.log(
-            "PYTHON REASON:",
-            orientationResult?.reason
-          );
-          console.log("==============================================");
+          console.log("PYTHON ROTATION:", rotation);
+          console.log("PYTHON CONFIDENCE:", orientationResult?.confidence);
+          console.log("PYTHON FACES:", orientationResult?.faces);
+          console.log("PYTHON REASON:", orientationResult?.reason);
 
-          console.log(
-            "STEP 4 GENERATING IMAGE VARIATIONS:",
-            file.name
-          );
+          // STEP 5: Rotate same 2880 file
+          await rotateImageInPlace(path2880, rotation);
 
-          const genThumb = generateThumbnail(
-            filePath,
-            thumbnailPath,
-            rotation
-          );
-
-          const gen2880 = resizeImage(
-            filePath,
+          // STEP 6: Generate thumbnail from final 2880
+          await generateThumbnail(
             path2880,
-            2880,
-            rotation
+            thumbnailPath,
+            0
           );
-
-          await Promise.all([
-            genThumb,
-            gen2880
-          ]);
 
           console.log(
             "STEP 5 VARIATIONS GENERATED SUCCESSFULLY:",
@@ -1132,10 +1105,15 @@ async function processSupplierS3Folder({ folderId, folderName, userId, subFolder
       try {
         await downloadS3ObjectToFile(originalKey, localOriginal);
 
-        const orientation = await detectImageOrientation(localOriginal);
+        // STEP 1: Create 2880 image once
+        await create2880Image(localOriginal, local2880);
+
+        // STEP 2: Detect orientation using 2880 image
+        const orientation = await detectImageOrientation(local2880);
         const rotation = Number(orientation?.rotation || 0);
 
-        await resizeImage(localOriginal, local2880, 2880, rotation);
+        // STEP 3: Rotate the same 2880 file
+        await rotateImageInPlace(local2880, rotation);
 
         const res2880 = await uploadFileToS3(local2880, fileName2880, folderName, userId, "image/jpeg");
         if (!res2880?.Key) throw new Error("S3 upload did not return Key for 2880 image");
@@ -1707,14 +1685,18 @@ async function processSupplierOrderS3Folder({
       try {
         await downloadS3ObjectToFile(originalS3Key, localOriginal);
 
-        const orientation = await detectImageOrientation(localOriginal);
+        // STEP 1: Original se 2880 image ek baar create karo
+        await create2880Image(localOriginal, local2880);
+
+        // STEP 2: Orientation API ko 2880 image do
+        const orientation = await detectImageOrientation(local2880);
         const rotation = Number(orientation?.rotation || 0);
 
-        // Resize + thumbnail parallel (dono independent hain)
-        await Promise.all([
-          resizeImage(localOriginal, local2880, 2880, rotation),
-          generateThumbnail(localOriginal, localThumbnail, rotation),
-        ]);
+        // STEP 3: Same 2880 file ko in-place rotate karo
+        await rotateImageInPlace(local2880, rotation);
+
+        // STEP 4: Final rotated 2880 se thumbnail banao
+        await generateThumbnail(local2880, localThumbnail, 0);
 
         // Dono uploads parallel
         const [resizedResponse, thumbnailResponse] = await Promise.all([
