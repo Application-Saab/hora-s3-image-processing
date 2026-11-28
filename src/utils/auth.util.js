@@ -466,6 +466,34 @@ const generateThumbnailVenue = async (
 };
 
 
+async function create2880Image(inputPath, outputPath) {
+  await sharp(inputPath)
+    .resize({
+      width: 2880,
+      withoutEnlargement: true
+    })
+    .jpeg({ quality: 85 })
+    .withMetadata()
+    .toFile(outputPath);
+}
+
+async function rotateImageInPlace(inputPath, rotation = 0) {
+  let image = sharp(inputPath);
+
+  if ([90, 180, 270].includes(rotation)) {
+    image = image.rotate(rotation);
+  } else {
+    image = image.rotate();
+  }
+
+  const outputBuffer = await image
+    .jpeg({ quality: 85 })
+    .withMetadata({ orientation: 1 })
+    .toBuffer();
+
+  await fs.promises.writeFile(inputPath, outputBuffer);
+}
+
 
 async function resizeImage(
   inputPath,
@@ -503,6 +531,7 @@ async function resizeImage(
       withoutEnlargement: true
     })
     .jpeg({ quality: 85 })
+    .withMetadata()
     .toFile(outputPath);
 }
 
@@ -611,4 +640,6 @@ module.exports = {
   deleteFileWithRetry,
   getVideoDuration,
   compressVideoInChunks,
+  create2880Image,
+  rotateImageInPlace,
 };
