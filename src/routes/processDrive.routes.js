@@ -3,6 +3,7 @@ const router = express.Router();
 const { handleDriveFolderUpload, uploadSingleImage, processSupplierS3Folder, processSupplierOrderS3Folder } = require("../services/drive.service");
 const Folder = require("../models/folder");
 const Order = require("../models/order");
+const User = require("../models/user")
 const fs = require("fs");
 const { uploadFileToS3, generateThumbnail, upload, generateVideoPreview, getVideoDuration, resizeImage } = require("../utils/auth.util");
 const { initiateMultipartUpload, completeMultipartUpload } = require('./videoUpload');
@@ -757,7 +758,10 @@ router.post("/upload", upload.array("files"), async (req, res) => {
       phoneNo,
       isWeblink = true,
       fileId,
+      isLastFile,
     } = req.body;
+
+    const shouldSendWhatsApp = isLastFile === "true";
 
     if (!fileId) {
       return res.status(400).json({
@@ -959,6 +963,59 @@ router.post("/upload", upload.array("files"), async (req, res) => {
           },
           { new: true },
         );
+
+        if (
+          shouldSendWhatsApp &&
+          updatedDoc?.status === "done" &&
+          isWeblink === "true"
+        ) {
+          try {
+            // Get host + guest IDs from folder
+            const folderWithViewers = await Folder.findById(mainFolderId)
+              .select("viewedBy")
+              .lean();
+
+            const viewerIds = (folderWithViewers?.viewedBy || [])
+              .map((viewer) => viewer.userId)
+              .filter(Boolean);
+
+            // Get host and guest phone numbers
+            const users = await User.find({
+              _id: { $in: viewerIds },
+            })
+              .select("phone")
+              .lean();
+
+            const phoneNumbers = [
+              phoneNo,
+              ...users.map((user) => user.phone),
+            ]
+              .filter(Boolean)
+              .map((phone) => String(phone).trim())
+              .filter((phone, index, arr) => arr.indexOf(phone) === index);
+
+            const whatsappLink = `YOUR_EXISTING_WEBLINK_URL`;
+
+            const results = await Promise.all(
+              phoneNumbers.map((mobile) =>
+                sendWhatsApp(
+                  mobile,
+                  "YOUR_SECOND_TEMPLATE_NAME",
+                  folderName,
+                  whatsappLink
+                )
+              )
+            );
+
+            console.log("[WEBLINK WHATSAPP] Results:", results);
+          } catch (whatsappError) {
+            console.error(
+              "[WEBLINK WHATSAPP] Error:",
+              whatsappError.message
+            );
+          }
+        }
+
 
         uploadedFiles.push(updatedDoc);
       } catch (error) {

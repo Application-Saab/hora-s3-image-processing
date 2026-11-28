@@ -1,6 +1,6 @@
 const axios = require("axios");
 
-const sendWhatsApp = async (mobile, orderId, link) => {
+const sendWhatsApp = async (mobile, templateName, orderId, link) => {
     console.log("=================================");
     console.log("[WHATSAPP SEND START]");
 
@@ -14,13 +14,13 @@ const sendWhatsApp = async (mobile, orderId, link) => {
                 from: "+917338584828",
                 to: formatted,
                 content: {
-                    templateName: "weblink_v5",
+                    templateName,
                     language: "en",
                     templateData: {
                         body: {
                             placeholders: [
-                                String(link),     // Source
                                 String(orderId), // Order status
+                                String(link),     // Source
                             ]
                         }
                     }

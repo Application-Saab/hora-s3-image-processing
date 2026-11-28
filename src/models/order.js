@@ -78,7 +78,19 @@ imageUploadCounts: {
     AllImagesUploadedAt:{type:Date, default: ''},
   },
   default: {}
-}
+},
+  whatsappTemplateTracking: [
+    {
+      imageSelectedTemplate: {
+        type: Boolean,
+        default: false
+      },
+      colorCorrectedSend: {
+        type: Boolean,
+        default: false
+      }
+    }
+  ],
 }, {
     strict: false,
     timestamps: true

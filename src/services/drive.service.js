@@ -8,6 +8,7 @@ const FolderModel = require("../models/folder.js");
 const FormData = require("form-data");
 const AWS = require("aws-sdk");
 const { emitToSupplier } = require("../../socket.js"); 
+const UserModel = require("../models/user.js");
 const {
   generateThumbnail,
   resizeImage,
@@ -851,9 +852,92 @@ async function handleDriveFolderUpload(
 
   const whatsappLink = `https://horaservices.com`;
 
-  if (updatedOrder?.phone_no) {
-    await sendWhatsApp(updatedOrder.phone_no, updatedOrderId, whatsappLink);
+
+  const tracking = updatedOrder?.whatsappTemplateTracking?.[0];
+
+  // FIRST MESSAGE: Only HOST
+  if (!tracking?.colorCorrectedSend) {
+
+    if (updatedOrder?.phone_no) {
+      const sent = await sendWhatsApp(
+        updatedOrder.phone_no,
+        "weblink_v12",
+        updatedOrderId,
+        whatsappLink
+      );
+
+      if (sent) {
+        await OrderModel.updateOne(
+          { order_id: orderId },
+          {
+            $set: {
+              "whatsappTemplateTracking.0.colorCorrectedSend": true
+            }
+          }
+        );
+
+        console.log("First WhatsApp template sent to HOST");
+      }
+    }
+
   }
+  // SECOND MESSAGE: HOST + GUESTS
+  else if (!tracking?.colorCorrectedTemplateSent) {
+
+    const folder = await FolderModel.findById(mainFolderId)
+      .select("viewedBy")
+      .lean();
+
+    const userIds = [
+      ...new Set(
+        (folder?.viewedBy || [])
+          .map(item => String(item.userId))
+          .filter(Boolean)
+      )
+    ];
+
+    const users = await UserModel.find({
+      _id: { $in: userIds }
+    })
+      .select("phone")
+      .lean();
+
+    const mobileNumbers = [
+      ...new Set(
+        users
+          .map(user => user.phone)
+          .filter(Boolean)
+      )
+    ];
+
+    if (mobileNumbers.length > 0) {
+
+      const results = await Promise.all(
+        mobileNumbers.map(mobile =>
+          sendWhatsApp(
+            mobile,
+            "NEW_TEMPLATE_NAME",
+            updatedOrderId,
+            whatsappLink
+          )
+        )
+      );
+
+      if (results.every(Boolean)) {
+        await OrderModel.updateOne(
+          { order_id: orderId },
+          {
+            $set: {
+              "whatsappTemplateTracking.0.colorCorrectedTemplateSent": true
+            }
+          }
+        );
+
+        console.log("Second WhatsApp template sent to HOST + GUESTS");
+      }
+    }
+  }
+
 
   return results;
   // await new Promise(resolve => setImmediate(resolve));
